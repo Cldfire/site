@@ -1,12 +1,16 @@
 # The URL the site will be built for
 base_url = "https://cldfire.dev"
 
+title = "Cldfire's Blog"
+description = "Primarily focused on programming, but other topics may occasionally appear"
+
 # Whether to automatically compile all Sass files in the sass directory
 compile_sass = true
 
 # Whether to do syntax highlighting
 # Theme can be customised by setting the `highlight_theme` variable to a theme supported by Zola
 highlight_code = true
+highlight_theme = "ayu-mirage"
 
 # Whether to build a search index to be used later on by a JavaScript library
 build_search_index = false
@@ -16,3 +20,8 @@ theme = "hyde"
 [extra]
 # Put all your custom variables here
 hyde_reverse = true
+hyde_links = [
+    { url = "https://twitter.com/_cldfire", name = "Twitter" },
+    { url = "https://github.com/Cldfire", name = "GitHub" },
+    { url = "https://www.linkedin.com/in/cldfire", name = "LinkedIn" },
+]
