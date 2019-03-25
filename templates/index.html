@@ -4,16 +4,18 @@
     <div class="posts">
         <!-- TODO: PR way to config this to theme?-->
         {% set section = get_section(path="blog/_index.md") %}
-        {% for page in section.pages | reverse %}
-            <div class="post">
-            <h1 class="post-title">
-                <a href="{{ page.permalink }}">
-                {{ page.title }}
-                </a>
-            </h1>
+        {% for page in section.pages %}
+            {% if not page.draft %}
+                <div class="post">
+                <h1 class="post-title">
+                    <a href="{{ page.permalink }}">
+                    {{ page.title }}
+                    </a>
+                </h1>
 
-            <span class="post-date">{{ page.date | date(format="%B %e, %Y") }}</span>
-            </div>
+                <span class="post-date">{{ page.date | date(format="%B %e, %Y") }}</span>
+                </div>
+            {% endif %}
         {% endfor %}
     </div>
 {% endblock %}
