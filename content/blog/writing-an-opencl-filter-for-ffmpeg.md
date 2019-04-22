@@ -1,8 +1,6 @@
 +++
 title = "Writing an OpenCL Filter for FFmpeg"
-# TODO: Date
 date = 2019-04-22
-draft = true
 +++
 
 April has arrived. Spring is in the air, the sun is beginning to shine, temperatures are starting to rise, and Google Summer of Code 2019's student application period has just recently passed. This is the first year that I was eligible to apply (the freshly-minted eighteen-year-old that I am), and the project that caught my eye involved porting FFmpeg's CPU video filters to the GPU via OpenCL. As an amateur video editor / videographer and a programmer fascinated by the GPU, it's an exciting project that's relevant to my interests, and since that's one of the ideals of GSoC, I figured, why not give it a shot? I also decided it would be the perfect time to start a blog with my shiny new `.dev` domain in order to document my journey completing the qualification task and writing a simple OpenCL filter for FFmpeg.
