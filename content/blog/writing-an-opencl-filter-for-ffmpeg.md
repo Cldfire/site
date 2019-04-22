@@ -1,11 +1,11 @@
 +++
 title = "Writing an OpenCL Filter for FFmpeg"
 # TODO: Date
-date = 2019-04-14
+date = 2019-04-22
 draft = true
 +++
 
-April has arrived. Spring is in the air, the sun is beginning to shine, temperatures are starting to rise, and Google Summer of Code 2019's student application period has just passed. This is the first year that I'm eligible to apply (the freshly-minted eighteen-year-old that I am), and the project that caught my eye involved porting FFmpeg's CPU video filters to the GPU via OpenCL. As an amateur video editor / videographer and a programmer fascinated by the GPU, its an exciting project that's relevant to my interests, and since that's one of the ideals of GSoC, I figured, why not give it a shot? I also decided it would be the perfect time to start a blog with my shiny new `.dev` domain in order to document my journey completing the qualification task and writing a simple OpenCL filter for FFmpeg.
+April has arrived. Spring is in the air, the sun is beginning to shine, temperatures are starting to rise, and Google Summer of Code 2019's student application period has just recently passed. This is the first year that I was eligible to apply (the freshly-minted eighteen-year-old that I am), and the project that caught my eye involved porting FFmpeg's CPU video filters to the GPU via OpenCL. As an amateur video editor / videographer and a programmer fascinated by the GPU, it's an exciting project that's relevant to my interests, and since that's one of the ideals of GSoC, I figured, why not give it a shot? I also decided it would be the perfect time to start a blog with my shiny new `.dev` domain in order to document my journey completing the qualification task and writing a simple OpenCL filter for FFmpeg.
 
 I aim to make this post useful for anyone looking to get started writing such filters for FFmpeg (perhaps for this same GSoC project in future years?).
 
@@ -58,7 +58,8 @@ youtube-dl https://www.youtube.com/watch?v=qdMR2jTTh_w
 Let's do a quick trim to fifteen seconds long with our freshly-built FFmpeg binary, transcoding to h264 in the `.mp4` container while we're at it:
 
 ```
-./ffmpeg -i ../path_to_video.webm -ss 00:00:30 -to 00:00:45 ../trimmed_video.mp4
+./ffmpeg -i ../path_to_video.webm -ss 00:00:30 -to 00:00:45 \
+../trimmed_video.mp4
 ```
 
 This command takes the downloaded video as input, seeks to the thirty second mark, and then re-encodes the video in the h264 codec, cutting the video off at forty-five seconds. You can test viewing the file with your browser (in my case, `firefox ../trimmed_video.mp4`).
@@ -66,7 +67,8 @@ This command takes the downloaded video as input, seeks to the thirty second mar
 Next, we'll try a run of the `avgblur` filter with a radius of ten on the CPU:
 
 ```
-time ./ffmpeg -i ../trimmed_video.mp4 -vf "avgblur=10" ../trimmed_video_blurred_cpu.mp4
+time ./ffmpeg -i ../trimmed_video.mp4 -vf "avgblur=10" \
+../trimmed_video_blurred_cpu.mp4
 ```
 
 Our naive measurement of how long the process took, using the `time` command, gives the following:
@@ -80,7 +82,9 @@ sys     0m1.332s
 Comparing that to the `avgblur_opencl` filter:
 
 ```
-time ./ffmpeg -init_hw_device opencl=gpu -filter_hw_device gpu -i ../trimmed_video.mp4 -vf "hwupload, avgblur_opencl=10, hwdownload" ../trimmed_video_blurred_opencl.mp4
+time ./ffmpeg -init_hw_device opencl=gpu -filter_hw_device gpu -i \
+../trimmed_video.mp4 -vf "hwupload, avgblur_opencl=10, hwdownload" \
+../trimmed_video_blurred_opencl.mp4
 ```
 
 There's more going on in this invocation of `ffmpeg`, so I'm going to break it down a bit. We're initializing a hardware device for OpenCL and naming it 'gpu' via the `-init-hw-device` flag. We're then setting the hardware device for hardware-accelerated filters to that device using the `-filter_hw_device` flag. Finally, we're changing the filter string to upload our video frames to the GPU before running the `avgblur_opencl` filter and download them from it afterwards through the addition of `hwupload` and `hwdownload` in the appropriate positions.
@@ -223,7 +227,7 @@ That pretty much does it for the CPU version of the filter. It's time to heat up
 
 ## Writing the `colorkey_opencl` Filter
 
-*Note: feel free to look everything up in the FFmpeg source if you would like to see the full code at any point*
+*Note: the [full code](https://github.com/FFmpeg/FFmpeg/commit/1c46ab4815f8b32512ae5fa4fd9dc95fecd2a05d) is available for browsing if you so desire at any point*
 
 Before we can get to the actually exciting part we unfortunately have some boilerplate to get out of the way. Let's put it in a new file (`libavfilter/vf_colorkey_opencl.c`) that contains a copy-pasted header and list of includes from one of the other OpenCL filters. We'll start off by defining the context:
 
@@ -245,7 +249,7 @@ typedef struct ColorkeyOpenCLContext {
 } ColorkeyOpenCLContext;
 ```
 
-Much of this is copied from the CPU filter. Since we're now writing an OpenCL filter, however, we're also adding an `OpenCLFilterContext` that contains additional stuff relevant for OpenCL filters, a variable to track whether or not that context has been initialized, a `cl_command_queue` that we'll use to submit work for OpenCL to do, a `cl_kernel` field that will store the actual code that OpenCL will be executing, and a `cl_float4` that will hold the RGBA color we are supposed to be matching against as a normalized float for use in the OpenCL kernel.
+Much of this is copied from the CPU filter. Since we're now writing an OpenCL filter, however, we're also adding an `OpenCLFilterContext` that contains additional stuff relevant for OpenCL filters, a variable to track whether or not that context has been initialized, a `cl_command_queue` that we'll use to submit work for OpenCL to do, a `cl_kernel` field that will store the actual code that OpenCL will be executing, and a `cl_float4` that will hold the RGBA color we are supposed to be matching against as a normalized float for use in the OpenCL kernel (we have to keep the `uint8_t` array around to support the generic color parameter input code that is provided to us by the rest of FFmpeg).
 
 Now for all of the "bottom-of-the-file" things:
 
@@ -281,9 +285,9 @@ For the sake of time I'll skip talking about this code in detail (it's pretty ea
 `colorkey_opencl_uninit` is something we need to write:
 
 ```c
-static av_cold void colorkey_opencl_uninit(AVFilterContext* avctx)
+static av_cold void colorkey_opencl_uninit(AVFilterContext *avctx)
 {
-    ColorkeyOpenCLContext* ctx = avctx->priv;
+    ColorkeyOpenCLContext *ctx = avctx->priv;
     cl_int cle;
 
     if (ctx->kernel_colorkey) {
@@ -336,12 +340,8 @@ Before we do that, though, let's create the OpenCL kernel that we're going to be
 Create a new file (`libavfilter/opencl/colorkey.cl`). Within it, we're going to add the following:
 
 ```c
-float4 get_pixel(image2d_t src, int2 loc) {
-    const sampler_t sampler = CLK_NORMALIZED_COORDS_FALSE |
-                                CLK_FILTER_NEAREST;
-
-    return read_imagef(src, sampler, loc);
-}
+const sampler_t sampler = CLK_NORMALIZED_COORDS_FALSE |
+                          CLK_FILTER_NEAREST;
 
 __kernel void colorkey(
     __read_only  image2d_t src,
@@ -350,15 +350,15 @@ __kernel void colorkey(
     float similarity
 ) {
     int2 loc = (int2)(get_global_id(0), get_global_id(1));
-    float4 pixel = get_pixel(src, loc);
+    float4 pixel = read_imagef(src, sampler, loc);
     float diff = distance(pixel.xyz, colorkey_rgba.xyz);
 
-    pixel.s3 = (diff > similarity) ? 1.0 : 0.0;
+    pixel.s3 = (diff > similarity) ? 1.0f : 0.0f;
     write_imagef(dst, loc, pixel);
 }
 ```
 
-The `get_pixel` function returns a pixel from `src` at `loc` (it's split off into a separate function since we'll be adding another short kernel that uses it shortly). Within the `colorkey` kernel we obtain the value for `loc` by using the `get_global_id` function that OpenCL provides. Every invocation of the kernel is going to be assigned unique IDs within a range that we'll specify when we queue the kernel to be executed; these unique IDs allow us to touch every pixel in the input image without using for loops!
+This kernel first grabs a pixel based on the return values of the `get_global_id` function that OpenCL provides (and with certain sampling flags set via the `sampler` variable; you can look up the flags [here](https://www.khronos.org/registry/OpenCL/sdk/1.2/docs/man/xhtml/)). Every invocation of the kernel is going to be assigned unique IDs within a range that we'll specify when we queue the kernel to be executed; these unique IDs allow us to touch every pixel in the input image without using loops!
 
 Everything after obtaining the pixel is directly translated from the CPU `do_colorkey_pixel` function; we calculate the "distance" (difference) between the pixel's RGB components and the key colors' RGB components using an OpenCL built-in function and then set the pixel's alpha value based upon a comparison between that difference and the given `similarity` value.
 
@@ -373,7 +373,7 @@ __kernel void colorkey_blend(
     float blend
 ) {
     int2 loc = (int2)(get_global_id(0), get_global_id(1));
-    float4 pixel = get_pixel(src, loc);
+    float4 pixel = read_imagef(src, sampler, loc);
     float diff = distance(pixel.xyz, colorkey_rgba.xyz);
 
     pixel.s3 = clamp((diff - similarity) / blend, 0.0f, 1.0f);
@@ -390,12 +390,12 @@ The OpenCL side is now complete! Let's return to CPU land and run the kernel(s).
 The `filter_frame` callback is where we're going to be executing a kernel, and it's going to be rather long, so instead of inserting it in its entirety here I'll insert sections of it and discuss those. Note that they belong within the following function body:
 
 ```c
-static int filter_frame(AVFilterLink* link, AVFrame* input_frame)
+static int filter_frame(AVFilterLink *link, AVFrame *input_frame)
 {
-    AVFilterContext* avctx = link->dst;
-    AVFilterLink* outlink = avctx->outputs[0];
-    ColorkeyOpenCLContext* colorkey_ctx = avctx->priv;
-    AVFrame* output_frame = NULL;
+    AVFilterContext *avctx = link->dst;
+    AVFilterLink *outlink = avctx->outputs[0];
+    ColorkeyOpenCLContext *colorkey_ctx = avctx->priv;
+    AVFrame *output_frame = NULL;
     int err;
     cl_int cle;
     size_t global_work[2];
@@ -411,8 +411,8 @@ fail:
 
 Here we have:
 
-* Our filter instances' `AVFilterContext` which we obtain a pointer to via `link`
-* A link to the filter we are outputting to
+* Our filter instances' `AVFilterContext` which we obtain a pointer to via `link` (the `link` here is between our filter and the one preceding it)
+* A link to the filter we are outputting to (`outlink`)
 * The specific `ColorKeyOpenCLContext` we wrote above that contains our state, obtained from the generic context
 * Various variables that will be initialized later on and used throughout the function
 * A `fail` label that is jumped to whenever we encounter an error and need to exit the function
@@ -426,7 +426,7 @@ if (!input_frame->hw_frames_ctx)
     return AVERROR(EINVAL);
 
 if (!colorkey_ctx->initialized) {
-    AVHWFramesContext* input_frames_ctx =
+    AVHWFramesContext *input_frames_ctx =
         (AVHWFramesContext*)input_frame->hw_frames_ctx->data;
     int fmt = input_frames_ctx->sw_format;
 
@@ -452,7 +452,7 @@ Let's break this down. The first if statement is checking to make sure that the 
 After making that check, we perform a call to `colorkey_opencl_init`:
 
 ```c
-static int colorkey_opencl_init(AVFilterContext* avctx)
+static int colorkey_opencl_init(AVFilterContext *avctx)
 {
     ColorkeyOpenCLContext *ctx = avctx->priv;
     cl_int cle;
@@ -526,7 +526,7 @@ if (colorkey_ctx->blend > 0.0001) {
 }
 ```
 
-FFmpeg sticks to an older version of the OpenCL API for compatibility, which unfortunately means we're stuck setting kernel arguments based on an index number rather than via the name of the argument (which is more error-prone). FFmpeg has a helper macro already written (`CL_SET_KERNEL_ARG`) that makes setting arguments quick and easy for us. Note that we set the `blend` argument based on the same condition we wrote to determine which kernel to use; if we're not doing blending then we're not even able to pass that argument as it won't be a part of our kernel.
+FFmpeg sticks to an older version of the OpenCL API for compatibility, which unfortunately means we're stuck setting kernel arguments based on an index number rather than via the name of the argument (which is more error-prone). FFmpeg has a helper macro already written (`CL_SET_KERNEL_ARG`) that makes setting arguments quick and easy for us despite this. Note that we set the `blend` argument based on the same condition we wrote to determine which kernel to use; if we're not doing blending then we're not even able to pass that argument as it won't be a part of our kernel.
 
 With all of that out of the way, it's finally time to run the kernel!
 
@@ -554,7 +554,7 @@ cle = clFinish(colorkey_ctx->command_queue);
 CL_FAIL_ON_ERROR(AVERROR(EIO), "Failed to finish command queue: %d.\n", cle);
 ```
 
-We enqueue the kernel to be executed using the `clEnqueueNDRangeKernel` function (which you can read in depth about [here](https://www.khronos.org/registry/OpenCL/sdk/1.2/docs/man/xhtml/)). Among other things, we pass it our command queue and kernel along with a `global_work` variable. Before making this call, we've made a call to `ff_opencl_filter_work_size_from_image` to initialize `global_work`; it's a helper function that determines the work size based on the dimensions of our `input_frame`. This `global_work` array specifies the range that OpenCL will choose IDs from to hand to kernel instances.
+We enqueue the kernel to be executed using the `clEnqueueNDRangeKernel` function (which you can look up [here](https://www.khronos.org/registry/OpenCL/sdk/1.2/docs/man/xhtml/)). Among other things, we pass it our command queue and kernel along with a `global_work` variable. Before making this call, we've made a call to `ff_opencl_filter_work_size_from_image` to initialize `global_work`; it's a helper function that determines the work size based on the dimensions of our `input_frame`. This `global_work` array specifies the range that OpenCL will choose IDs from to hand to kernel instances.
 
 After enqueuing the kernel, it's a simple matter of calling `clFinish` on the command queue to run the kernel to completion across the `global_work` range (plus the appropriate error handling).
 
@@ -605,10 +605,13 @@ We can now compile FFmpeg again, this time with our filter being built as well!
 make -j 8
 ```
 
-Let's try the filter:
+Let's try the filter. The following command takes our trimmed test video and an image, uploads the video to the GPU in the RGBA format and runs `colorkey_opencl` on it, downloads the processed frames back off of the GPU and then uses the `overlay` CPU filter to overlay the video on top of the provided image.
 
 ```bash
-time ./ffmpeg -i ../trimmed_video.mp4 -i img.jpg -init_hw_device opencl=gpu -filter_hw_device gpu -filter_complex "[0:v]format=rgba, hwupload, colorkey_opencl=yellow:0.4:0.2, hwdownload, format=rgba[over];[1:v][over]overlay" ../trimmed_video_colorkey.mp4
+time ./ffmpeg -i ../trimmed_video.mp4 -i img.jpg -init_hw_device \
+opencl=gpu -filter_hw_device gpu -filter_complex \
+"[0:v]format=rgba, hwupload, colorkey_opencl=yellow:0.4:0.2, hwdownload, format=rgba[over];[1:v][over]overlay" \
+../trimmed_video_colorkey.mp4
 ```
 
 The times for that invocation:
@@ -622,7 +625,9 @@ sys     0m2.892s
 For comparison, let's test the CPU version of the filter:
 
 ```bash
-time ./ffmpeg -i ../trimmed_video.mp4 -i img.jpg -filter_complex "[0:v]colorkey=yellow:0.4:0.2[ckout];[1:v][ckout]overlay" ../trimmed_video_colorkey_cpu.mp4
+time ./ffmpeg -i ../trimmed_video.mp4 -i img.jpg -filter_complex \
+"[0:v]colorkey=yellow:0.4:0.2[ckout];[1:v][ckout]overlay" \
+../trimmed_video_colorkey_cpu.mp4
 ```
 
 ```
@@ -631,16 +636,16 @@ user    3m34.862s
 sys     0m1.796s
 ```
 
-Similar to the `avgblur` comparison that we made all the way at the beginning of this blog post, the OpenCL filter is decreasing overall runtime by over 10% and decreasing CPU time despite the overhead of uploading and downloading frames to and from the GPU.
+Similar to the `avgblur` comparison that we made all the way at the beginning of this blog post, the OpenCL filter is reducing overall runtime by over 10% and decreasing total CPU time despite the overhead of uploading and downloading frames to and from the GPU.
 
 ### Side Note: Remember That Bugs Can Occur Outside of Your Code
 
-During the process of writing this filter I actually ran into a bug in FFmpeg's OpenCL utility code. The `opencl_get_plane_format` function responsible for determining the image format that should be used when allocating an OpenCL image for the data on a plane was incorrectly setting the channel order for all RGB formats to `CL_RGBA`, causing the use of any other RGB format to result in incorrect filter output (and also causing certain RGB formats to be incorrectly reported as supported by my hardware). I submitted [a patch](https://patchwork.ffmpeg.org/patch/12635/) to fix this bug while wrapping up work on the filter.
+During the process of writing this filter I actually ran into a bug in FFmpeg's OpenCL utility code. The `opencl_get_plane_format` function responsible for determining the image format that should be used when allocating an OpenCL image for the data on a plane was incorrectly setting the channel order for all RGB formats to `CL_RGBA`, causing the use of any other RGB format to result in incorrect filter output (and also causing certain RGB formats to be incorrectly reported as supported by my hardware). I submitted [a patch](https://github.com/FFmpeg/FFmpeg/commit/1c50d61a5a689f8eabef37f504c6f8f33eb178ba) to fix this bug while wrapping up work on the filter.
 
 I bring this up to remind you, the reader, to always remember that bugs *can* occur outside of your code, too! Investigate that possibility before you spend lots of time trying to figure out what you're doing wrong like I did :).
 
 ## Conclusion
 
-Wow, that ended up being a lot of words. We've gone from (in my case) having never worked with FFmpeg's codebase to having ourselves a functioning port of a CPU filter that gets run on the GPU via the OpenCL API.
+Wow, that ended up being quite a few words. We've gone from (in my case) having never worked with FFmpeg's codebase to having ourselves a functioning port of a CPU filter that gets run on the GPU via the OpenCL API.
 
-Hopefully you found this post informative in some way (or at least interesting!). I have no idea if I'm going to be accepted into the Google Summer of Code program yet, but if I am, I certainly plan on writing more blog posts throughout the summer. Feel free to follow me [on Twitter](https://twitter.com/_cldfire) if you'd like to know when those go live.
+Hopefully you found this post informative in some way (or at least interesting!). I have no idea if I'm going to be accepted into the Google Summer of Code program yet, but if I am, I certainly hope to write another blog post (or posts) over the course of the summer. Feel free to follow me [on Twitter](https://twitter.com/_cldfire) if you'd like to know when those go live.
