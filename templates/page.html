@@ -1,5 +1,9 @@
 {% extends "hyde/templates/page.html" %}
 
+{% block extra_head %}
+    <link rel=icon type="image/png" href=/favicon.png>
+{% endblock %}
+
 {% block content %}
 <div class="post">
   <h1 class="post-title">{{ page.title }}</h1>
