@@ -1,3 +1,6 @@
+<!-- Command to generate pdf: wkhtmltopdf --no-background --margin-top 5mm static/resume/index.html static/resume.pdf -->
+<!-- Remember to delete blank second page -->
+
 <!DOCTYPE html>
 <html>
 <head>
@@ -20,9 +23,10 @@
 
 				<div class="yui-u">
 					<div class="contact-info">
-						<h3 style="padding-top: 8px;"><a href="mailto:jarek.samic@gmail.com">jarek.samic@gmail.com</a></h3>
-						<h3><a href="https://cldfire.dev" target="_blank">cldfire.dev</a></h3>
-						<h3><a href="#">pdf</a></h3>
+						<h3><a href="mailto:jarek.samic@gmail.com">jarek.samic@gmail.com</a></h3>
+						<h3><a href="tel:330-590-7577">(330) 590-7577</a></h3>
+						<h3><a href="https://cldfire.dev">cldfire.dev</a></h3>
+						<h3><a href="../resume.pdf">pdf</a></h3>
 					</div><!--// .contact-info -->
 				</div>
 			</div><!--// .yui-gc -->
@@ -33,47 +37,6 @@
 				<div class="yui-b">
 
 					<div class="yui-gf">
-						<div class="yui-u first">
-							<h2>Profile</h2>
-						</div>
-						<div class="yui-u">
-							<p class="enlarge">
-								Interested in details and getting the little things right, I enjoy pulling my weight on a well-oiled team and working together to achieve greater goals than what can be accomplished alone.
-							</p>
-							<br>
-							<p class="enlarge">
-								Currently looking to take the next step in my career with an on-site internship.
-							</p>
-						</div>
-					</div><!--// .yui-gf -->
-
-					<div class="yui-gf">
-							<div class="yui-u first">
-								<h2>Technical</h2>
-							</div>
-							<div class="yui-u">
-								<ul class="talent">
-									<li>Rust</li>
-									<li>C / C++</li>
-									<li class="last">Swift</li>
-								</ul>
-	
-								<ul class="talent">
-									<li>OpenCL</li>
-									<li>FFI</li>
-									<li class="last">Git, Continuous Integration</li>
-								</ul>
-	
-								<ul class="talent">
-									<li>Linux (Arch, Ubuntu)</li>
-									<li>macOS</li>
-									<li class="last">Windows (+ WSL)</li>
-								</ul>
-							</div>
-						</div><!--// .yui-gf-->
-
-					<div class="yui-gf">
-
 						<div class="yui-u first">
 							<h2>Experience</h2>
 						</div><!--// .yui-u -->
@@ -88,6 +51,19 @@
 							</div>
 
 						</div><!--// .yui-u -->
+					</div><!--// .yui-gf -->
+
+					<div class="yui-gf">
+						<div class="yui-u first">
+							<h2>Education</h2>
+						</div>
+						<div class="yui-u job last"> <!-- I couldn't resist the subtle jab ;) -->
+							<h2>University of Akron - Akron, Ohio</h2>
+							<h3>B.S. in Computer Science with a minor in Mathematics &mdash; <strong>3.9 GPA</strong> </h3>
+							<p style="margin-bottom: 0;"><i>Dean's List, President's List</i></p>
+							<p style="margin-top: 0;"><i>Completed 70 credits prior to graduating high school</i></p>
+							<h4>2021 (expected)</h4>
+						</div>
 					</div><!--// .yui-gf -->
 
 					<div class="yui-gf">
@@ -107,21 +83,7 @@
 						</div><!--// .yui-u -->
 					</div><!--// .yui-gf -->
 
-
 					<div class="yui-gf">
-						<div class="yui-u first">
-							<h2>Education</h2>
-						</div>
-						<div class="yui-u job last"> <!-- I couldn't resist the subtle jab ;) -->
-							<h2>University of Akron - Akron, Ohio</h2>
-							<h3>B.S. in Computer Science with a minor in Mathematics &mdash; <strong>3.9 GPA</strong> </h3>
-							<p style="margin-bottom: 0;"><i>Dean's List, President's List</i></p>
-							<p style="margin-top: 0;"><i>Completed 70 credits prior to graduating high school</i></p>
-							<h4>2021 (expected)</h4>
-						</div>
-					</div><!--// .yui-gf -->
-
-					<div class="yui-gf last">
 
 						<div class="yui-u first">
 							<h2>Other</h2>
@@ -154,13 +116,37 @@
 						</div><!--// .yui-u -->
 					</div><!--// .yui-gf -->
 
+					<div class="yui-gf last">
+						<div class="yui-u first">
+							<h2>Technical</h2>
+						</div>
+						<div class="yui-u">
+							<ul class="talent">
+								<li>Rust</li>
+								<li>C / C++</li>
+								<li class="last">Swift</li>
+							</ul>
+
+							<ul class="talent">
+								<li>OpenCL</li>
+								<li>FFI</li>
+								<li class="last">Git, Continuous Integration</li>
+							</ul>
+
+							<ul class="talent">
+								<li>Linux (Arch, Ubuntu)</li>
+								<li>macOS</li>
+								<li class="last">Windows (+ WSL)</li>
+							</ul>
+						</div>
+					</div><!--// .yui-gf-->
 
 				</div><!--// .yui-b -->
 			</div><!--// yui-main -->
 		</div><!--// bd -->
 
 		<div id="ft">
-			<p>Jarek Samic &mdash; <a href="mailto:jarek.samic@gmail.com">jarek.samic@gmail.com</a> &mdash; <a href="https://cldfire.dev" target="_blank">cldfire.dev</a></p>
+			<p>Jarek Samic &mdash; <a href="mailto:jarek.samic@gmail.com">jarek.samic@gmail.com</a> &mdash; <a href="tel:330-590-7577">(330) 590-7577</a> &mdash; <a href="https://cldfire.dev">cldfire.dev</a></p>
 		</div><!--// footer -->
 
 	</div><!-- // inner -->
