@@ -21,8 +21,9 @@ theme = "hyde"
 # Put all your custom variables here
 hyde_reverse = true
 hyde_links = [
-    { url = "https://twitter.com/_cldfire", name = "Twitter" },
-    { url = "https://github.com/Cldfire", name = "GitHub" },
-    { url = "https://www.linkedin.com/in/cldfire", name = "LinkedIn" },
+    { url = "https://twitter.com/_cldfire", name = "Twitter", relme = true },
+    { url = "https://hachyderm.io/@Cldfire", name = "Mastodon", relme = true },
+    { url = "https://github.com/Cldfire", name = "GitHub", relme = true },
+    { url = "https://www.linkedin.com/in/cldfire", name = "LinkedIn", relme = true },
     { url = "/resume/", name = "Resume" },
 ]
