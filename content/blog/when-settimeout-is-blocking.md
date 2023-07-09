@@ -159,7 +159,7 @@ int DOMTimer::install(ScriptExecutionContext& context, Function<void(ScriptExecu
 }
 ```
 
-This is the code that handles `setTimeout` calls. There's a bit towards the end there that calls [`document.contentChangeObserver().didInstallDOMTimer(timer.get(), timeout, oneShot)`](https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L302-L320):
+This is the code that handles `setTimeout` calls. There's a bit towards the end there that calls [`didInstallDOMTimer(...)`](https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L302-L320):
 
 ```cpp
 void ContentChangeObserver::didInstallDOMTimer(const DOMTimer& timer, Seconds timeout, bool singleShot)
