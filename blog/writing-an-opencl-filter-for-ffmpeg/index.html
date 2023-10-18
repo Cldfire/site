@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+      <!-- Enable responsiveness on mobile devices-->
+      <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+      <title>Cldfire&#x27;s Blog</title>
+
+      <!-- CSS -->
+      <link rel="stylesheet" href="https://cldfire.dev/print.css" media="print">
+      <link rel="stylesheet" href="https://cldfire.dev/poole.css">
+      <link rel="stylesheet" href="https://cldfire.dev/hyde.css">
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface">
+
+      
+
+      
+    <link rel=icon type="image/png" href=/favicon.png>
+
+    </head>
+
+    <body class=" layout-reverse">
+        
+            <div class="sidebar">
+                <div class="container sidebar-sticky">
+                    <div class="sidebar-about">
+                        
+                            <a href="https:&#x2F;&#x2F;cldfire.dev"><h1>Cldfire&#x27;s Blog</h1></a>
+                            
+                            <p class="lead">Primarily focused on programming, but other topics may occasionally appear</p>
+                            
+                        
+                    </div>
+
+                    <ul class="sidebar-nav">
+                        
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;twitter.com&#x2F;_cldfire">Twitter</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;hachyderm.io&#x2F;@Cldfire">Mastodon</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;github.com&#x2F;Cldfire">GitHub</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;cldfire">LinkedIn</a></li>
+                        
+                        <li class="sidebar-nav-item"><a  href="&#x2F;resume.pdf">Resume</a></li>
+                        
+                        
+                    </ul>
+                </div>
+            </div>
+        
+
+        <div class="content container">
+            
+<div class="post">
+  <h1 class="post-title">Writing an OpenCL Filter for FFmpeg</h1>
+  <!-- TODO: Make this configurable in the theme? -->
+  <span class="post-date">April 22, 2019</span>
+  <p>April has arrived. Spring is in the air, the sun is beginning to shine, temperatures are starting to rise, and Google Summer of Code 2019's student application period has just recently passed. This is the first year that I was eligible to apply (the freshly-minted eighteen-year-old that I am), and the project that caught my eye involved porting FFmpeg's CPU video filters to the GPU via OpenCL. As an amateur video editor / videographer and a programmer fascinated by the GPU, it's an exciting project that's relevant to my interests, and since that's one of the ideals of GSoC, I figured, why not give it a shot? I also decided it would be the perfect time to start a blog with my shiny new <code>.dev</code> domain in order to document my journey completing the qualification task and writing a simple OpenCL filter for FFmpeg.</p>
+<p>I aim to make this post useful for anyone looking to get started writing such filters for FFmpeg (perhaps for this same GSoC project in future years?).</p>
+<p>Let's begin.</p>
+<h2 id="building-ffmpeg">Building FFmpeg</h2>
+<p>First things first: you're going to need to have a few libraries installed on your system in order to build FFmpeg with OpenCL features. The following only applies to Arch Linux and an NVIDIA GPU, so if you're using a different distro and/or hardware, you'll need to research the appropriate packages yourself for this step (take a read through <a href="https://trac.ffmpeg.org/wiki/CompilationGuide">FFmpeg's compilation guides</a> and possibly <a href="https://wiki.archlinux.org/index.php/GPGPU">the Arch wiki's GPGPU page</a>). </p>
+<p>If you're using Windows, <a href="https://trac.ffmpeg.org/wiki/CompilationGuide/MinGW">good</a> <a href="https://trac.ffmpeg.org/wiki/CompilationGuide/MSVC">luck</a> <a href="https://trac.ffmpeg.org/wiki/CompilationGuide/CrossCompilingForWindows">friend</a>.</p>
+<p>Since I'm going to be on Arch for the duration of this blog post, however, I can easily grab the necessary packages via <code>pacman</code> (note that it is assumed that standard development packages such as a C compiler, make, etc., are already installed):</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>sudo pacman -S x264 opencl-headers yasm opencl-nvidia ocl-icd
+</span></code></pre>
+<p><code>x264</code> provides support for encoding h.264. The <code>opencl-headers</code> provide the header files that the FFmpeg source references. <code>yasm</code> is an assembler that is used to compile various assembly components in FFmpeg for improved performance. The <code>opencl-nvidia</code> package is NVIDIA's official OpenCL runtime (the piece that actually executes the OpenCL code that I'll be writing), and <code>ocl-icd</code> is an Arch-maintained package that provides an implementation of an Installable Client Driver (ICD) loader for OpenCL (a tool that takes care of loading the different vendors' OpenCL runtimes across all platforms).</p>
+<p>Next, you need to clone the FFmpeg source (replace <code>some/path</code> with something that works well for you):</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>git clone git://source.ffmpeg.org/ffmpeg some/path
+</span></code></pre>
+<p>Now that you have the necessary packages installed and FFmpeg cloned, you're ready to configure the build (run from the root of your FFmpeg clone):</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>./configure --enable-nonfree --enable-gpl --enable-libx264 --enable-opencl
+</span></code></pre>
+<p>And finally, build FFmpeg (set the number of build jobs to a number that makes sense for your hardware):</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>make -j 8
+</span></code></pre>
+<p>After some minutes pass, you should see the various FFmpeg binaries appear in the root of your FFmpeg clone; if not, troubleshooting build failures is outside the scope of this post. Come back when your build is finished successfully!</p>
+<h2 id="testing-an-existing-filter">Testing an Existing Filter</h2>
+<p>The first thing we'll do is try out one of the existing OpenCL filters, both to make sure that they are functioning properly (meaning our OpenCL install is in good order) and to make sure that we know how to use them (since we'll be needing to run them quite a bit when we begin writing our own). We are, of course, going to need some kind of input to process. This being my blog, I'm obligated to direct you to download my own content ;) (install <code>youtube-dl</code> with <code>pacman</code> if you don't have it already and put the video file wherever you'd like):</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>youtube-dl https://www.youtube.com/watch?v=qdMR2jTTh_w
+</span></code></pre>
+<p><em>Disclaimer: use of my video is not required for those who dislike Rocket League</em></p>
+<p>Let's do a quick trim to fifteen seconds long with our freshly-built FFmpeg binary, transcoding to h264 in the <code>.mp4</code> container while we're at it:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>./ffmpeg -i ../path_to_video.webm -ss 00:00:30 -to 00:00:45 \
+</span><span>../trimmed_video.mp4
+</span></code></pre>
+<p>This command takes the downloaded video as input, seeks to the thirty second mark, and then re-encodes the video in the h264 codec, cutting the video off at forty-five seconds. You can test viewing the file with your browser (in my case, <code>firefox ../trimmed_video.mp4</code>).</p>
+<p>Next, we'll try a run of the <code>avgblur</code> filter with a radius of ten on the CPU:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>time ./ffmpeg -i ../trimmed_video.mp4 -vf &quot;avgblur=10&quot; \
+</span><span>../trimmed_video_blurred_cpu.mp4
+</span></code></pre>
+<p>Our naive measurement of how long the process took, using the <code>time</code> command, gives the following:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m37.814s
+</span><span>user    4m30.294s
+</span><span>sys     0m1.332s
+</span></code></pre>
+<p>Comparing that to the <code>avgblur_opencl</code> filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>time ./ffmpeg -init_hw_device opencl=gpu -filter_hw_device gpu -i \
+</span><span>../trimmed_video.mp4 -vf &quot;hwupload, avgblur_opencl=10, hwdownload&quot; \
+</span><span>../trimmed_video_blurred_opencl.mp4
+</span></code></pre>
+<p>There's more going on in this invocation of <code>ffmpeg</code>, so I'm going to break it down a bit. We're initializing a hardware device for OpenCL and naming it 'gpu' via the <code>-init-hw-device</code> flag. We're then setting the hardware device for hardware-accelerated filters to that device using the <code>-filter_hw_device</code> flag. Finally, we're changing the filter string to upload our video frames to the GPU before running the <code>avgblur_opencl</code> filter and download them from it afterwards through the addition of <code>hwupload</code> and <code>hwdownload</code> in the appropriate positions.</p>
+<p>The times for this invocation:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m29.406s
+</span><span>user    3m26.989s
+</span><span>sys     0m2.855s
+</span></code></pre>
+<p>So, although our measurements are certainly not very scientific, we can at least conclude that despite now having to upload and download the video frames to and from the GPU, using OpenCL filters has actually cut the overall execution time by over twenty percent and also reduced the amount of CPU time used.</p>
+<p>Additionally, if we take a look at the output of <code>nvidia-smi</code> while performing the above operation with the OpenCL filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>+-----------------------------------------------------------------------------+
+</span><span>| NVIDIA-SMI 418.56       Driver Version: 418.56       CUDA Version: 10.1     |
+</span><span>|-------------------------------+----------------------+----------------------+
+</span><span>| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+</span><span>| Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+</span><span>|===============================+======================+======================|
+</span><span>|   0  GeForce GTX 980 Ti  Off  | 00000000:01:00.0  On |                  N/A |
+</span><span>| 30%   60C    P2    95W / 275W |    911MiB /  6080MiB |     12%      Default |
+</span><span>+-------------------------------+----------------------+----------------------+
+</span><span>                                                                               
+</span><span>+-----------------------------------------------------------------------------+
+</span><span>| Processes:                                                       GPU Memory |
+</span><span>|  GPU       PID   Type   Process name                             Usage      |
+</span><span>|=============================================================================|
+</span><span>|    0       715      G   /usr/lib/Xorg                                481MiB |
+</span><span>|    0       736      G   compton                                        3MiB |
+</span><span>|    0      3925      C   ./ffmpeg                                     116MiB |
+</span><span>+-----------------------------------------------------------------------------+
+</span></code></pre>
+<p>We notice that there's a moderate amount of GPU usage showing up in concert with our FFmpeg binary being listed as a compute process. Nice!</p>
+<p>On to writing a filter of our own.</p>
+<h2 id="finding-a-filter-to-port">Finding a Filter to Port</h2>
+<p>According to the wiki entry for the GSoC project, the new filter that I was supposed to implement could either be a copy of an existing filter or an entirely new one, and it didn't have to &quot;be efficient or do anything complex.&quot; That's good! There was a lot to learn (both about the FFmpeg codebase and the email-oriented development workflow); keeping the filter simple made it a lot easier to become acquainted with those things.</p>
+<p>After scrolling through the list of existing CPU filters for a while, I eventually stumbled upon one titled <code>colorkey</code> that was short and structured in a way that I figured would make it reasonably straightforward to port to OpenCL. Specifically, I immediately noticed that the filter:</p>
+<ul>
+<li>Was already designed in a multi-threaded manner (and I know that we're essentially going to be writing a version that runs on a drastically increased number of &quot;threads&quot;).</li>
+<li>Already had the exact code that would need to be run via OpenCL factored out into a single function (<code>do_colorkey_pixel</code>).</li>
+</ul>
+<p>Now it's time to familiarize ourselves with the code.</p>
+<h2 id="overview-of-the-colorkey-cpu-filter">Overview of the <code>colorkey</code> CPU Filter</h2>
+<p>Here is a version of the <code>vf_colorkey.c</code> file that we're going to be discussing with almost everything but the declarations cut out:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">typedef struct</span><span> ColorkeyContext {
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>} </span><span style="color:#73d0ff;">ColorkeyContext</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">static </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffd580;">do_colorkey_pixel</span><span>(ColorkeyContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">ctx</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">r</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">g</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">b</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span><span>
+</span><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">do_colorkey_slice</span><span>(AVFilterContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">avctx</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">void </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">arg</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">int </span><span style="color:#ffcc66;">jobnr</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">int </span><span style="color:#ffcc66;">nb_jobs</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span><span>
+</span><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">filter_frame</span><span>(AVFilterLink </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">link</span><span style="color:#ccc9c2cc;">,</span><span> AVFrame </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">frame</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span><span>
+</span><span style="color:#ffa759;">static</span><span> av_cold </span><span style="color:#ffa759;">int </span><span style="color:#ffd580;">config_output</span><span>(AVFilterLink </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">outlink</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span><span>
+</span><span style="color:#ffa759;">static</span><span> av_cold </span><span style="color:#ffa759;">int </span><span style="color:#ffd580;">query_formats</span><span>(AVFilterContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">avctx</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span><span>
+</span><span style="color:#ffa759;">static const</span><span> AVFilterPad colorkey_inputs[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">static const</span><span> AVFilterPad colorkey_outputs[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">static const</span><span> AVOption colorkey_options[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffd580;">AVFILTER_DEFINE_CLASS</span><span>(colorkey)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>AVFilter ff_vf_colorkey </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>The <code>ColorkeyContext</code> struct at the top is the state of the filter: it contains any data that is needed throughout an instances' execution lifetime, such as values that were passed to the filter as arguments and a pointer to a class that contains information about the filter itself.</p>
+<p>Next I'm actually going to go all the way to the bottom and talk about the boilerplate that is found there. As you'll see very shortly when we start the OpenCL port, the <code>AVFilter</code> variable named <code>ff_vf_colorkey</code> is the high-level structure that contains all of the information about the filter (its name, inputs, outputs, the callback to negotiate formats, the size of its context structure, and more). One of its fields is set to the class that the macro <code>AVFILTER_DEFINE_CLASS</code> defines immediately above it; other things that go inside it are <code>colorkey_outputs</code> (each array element is an output pad that the filter supports along with its associated data; the <code>config_output</code> function is passed as a callback here), <code>colorkey_inputs</code> (previous but for inputs), and <code>query_formats</code> (a function passed as a callback to negotiate what formats the filter accepts as input).</p>
+<p>Finally, it's time to look at the functions where the actual filter work happens.</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">filter_frame</span><span>(AVFilterLink </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">link</span><span style="color:#ccc9c2cc;">,</span><span> AVFrame </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">frame</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span></code></pre>
+<p>The <code>filter_frame</code> function is passed as a callback to the single element of the <code>colorkey_inputs</code> array. It is the function that gets called to process every frame of input that gets passed for that particular input pad. We're provided with an <code>AVFrame</code> that contains said frame input as well as a pointer to an <code>AVFilterLink</code> that represents a link between our filter and the one before it that is providing us with input (from which we can gain access to all kinds of contextual stuff that's needed to write the body of the function).</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">do_colorkey_slice</span><span>(AVFilterContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">avctx</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">void </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">arg</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">int </span><span style="color:#ffcc66;">jobnr</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">int </span><span style="color:#ffcc66;">nb_jobs</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span></code></pre>
+<p>This <code>do_colorkey_slice</code> function is irrelevant to us since it's used to implement the CPU multi-threading that we're about to be replacing, so I won't discuss it further.</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffd580;">do_colorkey_pixel</span><span>(ColorkeyContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">ctx</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">r</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">g</span><span style="color:#ccc9c2cc;">, </span><span style="font-style:italic;color:#5ccfe6;">uint8_t </span><span style="color:#ffcc66;">b</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>}
+</span></code></pre>
+<p>Here is the aforementioned <code>do_colorkey_pixel</code> function that was the reason this filter caught my eye in the first place. This function contains the code that runs the formulaic portion of the filter that we'll be needing to translate into an OpenCL kernel.</p>
+<p>That pretty much does it for the CPU version of the filter. It's time to heat up our GPU!</p>
+<h2 id="writing-the-colorkey-opencl-filter">Writing the <code>colorkey_opencl</code> Filter</h2>
+<p><em>Note: the <a href="https://github.com/FFmpeg/FFmpeg/commit/1c46ab4815f8b32512ae5fa4fd9dc95fecd2a05d">full code</a> is available for browsing if you so desire at any point</em></p>
+<p>Before we can get to the actually exciting part we unfortunately have some boilerplate to get out of the way. Let's put it in a new file (<code>libavfilter/vf_colorkey_opencl.c</code>) that contains a copy-pasted header and list of includes from one of the other OpenCL filters. We'll start off by defining the context:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">typedef struct</span><span> ColorkeyOpenCLContext {
+</span><span>    OpenCLFilterContext ocf</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Whether or not the above `OpenCLFilterContext` has
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// been initialized
+</span><span>    </span><span style="color:#ffa759;">int</span><span> initialized</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    cl_command_queue command_queue</span><span style="color:#ccc9c2cc;">;
+</span><span>    cl_kernel kernel_colorkey</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#5ccfe6;">uint8_t</span><span> colorkey_rgba[</span><span style="color:#ffcc66;">4</span><span>]</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Stored as a normalized float for passing to the OpenCL kernel
+</span><span>    cl_float4 colorkey_rgba_float</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">float</span><span> similarity</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">float</span><span> blend</span><span style="color:#ccc9c2cc;">;
+</span><span>} </span><span style="color:#73d0ff;">ColorkeyOpenCLContext</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>Much of this is copied from the CPU filter. Since we're now writing an OpenCL filter, however, we're also adding an <code>OpenCLFilterContext</code> that contains additional stuff relevant for OpenCL filters, a variable to track whether or not that context has been initialized, a <code>cl_command_queue</code> that we'll use to submit work for OpenCL to do, a <code>cl_kernel</code> field that will store the actual code that OpenCL will be executing, and a <code>cl_float4</code> that will hold the RGBA color we are supposed to be matching against as a normalized float for use in the OpenCL kernel (we have to keep the <code>uint8_t</code> array around to support the generic color parameter input code that is provided to us by the rest of FFmpeg).</p>
+<p>Now for all of the &quot;bottom-of-the-file&quot; things:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">#define </span><span style="color:#ffd580;">OFFSET</span><span>(</span><span style="color:#ffcc66;">x</span><span>) </span><span style="color:#ffd580;">offsetof</span><span>(ColorkeyOpenCLContext</span><span style="color:#ccc9c2cc;">,</span><span> x)
+</span><span style="color:#ffa759;">#define </span><span style="color:#73d0ff;">FLAGS</span><span> AV_OPT_FLAG_FILTERING_PARAM</span><span style="color:#f29e74;">|</span><span>AV_OPT_FLAG_VIDEO_PARAM
+</span><span>
+</span><span style="color:#ffa759;">static const</span><span> AVOption colorkey_opencl_options[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    { </span><span style="color:#bae67e;">&quot;color&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;set the colorkey key color&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">OFFSET</span><span>(colorkey_rgba)</span><span style="color:#ccc9c2cc;">,</span><span> AV_OPT_TYPE_COLOR</span><span style="color:#ccc9c2cc;">, </span><span>{ </span><span style="color:#f29e74;">.</span><span>str </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;black&quot; </span><span>}</span><span style="color:#ccc9c2cc;">,</span><span> CHAR_MIN</span><span style="color:#ccc9c2cc;">,</span><span> CHAR_MAX</span><span style="color:#ccc9c2cc;">,</span><span> FLAGS }</span><span style="color:#ccc9c2cc;">,
+</span><span>    { </span><span style="color:#bae67e;">&quot;similarity&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;set the colorkey similarity value&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">OFFSET</span><span>(similarity)</span><span style="color:#ccc9c2cc;">,</span><span> AV_OPT_TYPE_FLOAT</span><span style="color:#ccc9c2cc;">, </span><span>{ </span><span style="color:#f29e74;">.</span><span>dbl </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">01 </span><span>}</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">01</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">,</span><span> FLAGS }</span><span style="color:#ccc9c2cc;">,
+</span><span>    { </span><span style="color:#bae67e;">&quot;blend&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;set the colorkey key blend value&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">OFFSET</span><span>(blend)</span><span style="color:#ccc9c2cc;">,</span><span> AV_OPT_TYPE_FLOAT</span><span style="color:#ccc9c2cc;">, </span><span>{ </span><span style="color:#f29e74;">.</span><span>dbl </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0 </span><span>}</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">,</span><span> FLAGS }</span><span style="color:#ccc9c2cc;">,
+</span><span>    { </span><span style="color:#ffcc66;">NULL </span><span>}
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffd580;">AVFILTER_DEFINE_CLASS</span><span>(colorkey_opencl)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>AVFilter ff_vf_colorkey_opencl </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    </span><span style="color:#f29e74;">.</span><span>name           </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;colorkey_opencl&quot;</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>description    </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">NULL_IF_CONFIG_SMALL</span><span>(</span><span style="color:#bae67e;">&quot;Turns a certain color into transparency. Operates on RGB colors.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>priv_size      </span><span style="color:#f29e74;">= </span><span style="color:#ffa759;">sizeof</span><span>(ColorkeyOpenCLContext)</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>priv_class     </span><span style="color:#f29e74;">= &amp;</span><span>colorkey_opencl_class</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>init           </span><span style="color:#f29e74;">= &amp;</span><span>ff_opencl_filter_init</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>uninit         </span><span style="color:#f29e74;">= &amp;</span><span>colorkey_opencl_uninit</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>query_formats  </span><span style="color:#f29e74;">= &amp;</span><span>ff_opencl_filter_query_formats</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>inputs         </span><span style="color:#f29e74;">=</span><span> colorkey_opencl_inputs</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>outputs        </span><span style="color:#f29e74;">=</span><span> colorkey_opencl_outputs</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#f29e74;">.</span><span>flags_internal </span><span style="color:#f29e74;">=</span><span> FF_FILTER_FLAG_HWFRAME_AWARE
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>For the sake of time I'll skip talking about this code in detail (it's pretty easy to figure out what it all does on a need-to-know basis). We do, however, need to touch on some of the functions getting passed as callbacks. <code>ff_opencl_filter_query_formats</code>, <code>ff_opencl_filter_init</code>, <code>ff_opencl_filter_config_output</code>, and <code>ff_opencl_filter_config_input</code> are all functions that are defined for us elsewhere; from the code I've read, it looks like most other OpenCL filters all use these functions, so you're likely going to want to as well.</p>
+<p><code>colorkey_opencl_uninit</code> is something we need to write:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static</span><span> av_cold </span><span style="color:#ffa759;">void </span><span style="color:#ffd580;">colorkey_opencl_uninit</span><span>(AVFilterContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">avctx</span><span>)
+</span><span>{
+</span><span>    ColorkeyOpenCLContext </span><span style="color:#f29e74;">*</span><span>ctx </span><span style="color:#f29e74;">=</span><span> avctx</span><span style="color:#f29e74;">-&gt;</span><span>priv</span><span style="color:#ccc9c2cc;">;
+</span><span>    cl_int cle</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey) {
+</span><span>        cle </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clReleaseKernel</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(cle </span><span style="color:#f29e74;">!=</span><span> CL_SUCCESS)
+</span><span>            </span><span style="font-style:italic;color:#5c6773;">// log error
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue) {
+</span><span>        cle </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clReleaseCommandQueue</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(cle </span><span style="color:#f29e74;">!=</span><span> CL_SUCCESS)
+</span><span>            </span><span style="font-style:italic;color:#5c6773;">// log error
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffd580;">ff_opencl_filter_uninit</span><span>(avctx)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>This function, as the name suggests, is used to clean up our context after the filter is finished running. This basically consists of using the appropriate functions from the <code>OpenCL</code> API on the corresponding fields of our <code>ColorkeyOpenClContext</code> that we obtain from the <code>priv</code> field of the passed <code>AVFilterContext</code>, and then calling the externally-defined <code>ff_opencl_filter_uninit</code> to handle the rest.</p>
+<p>We also need to define <code>colorkey_opencl_inputs</code> and <code>colorkey_opencl_outputs</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static const</span><span> AVFilterPad colorkey_opencl_inputs[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    {
+</span><span>        </span><span style="color:#f29e74;">.</span><span>name </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;default&quot;</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#f29e74;">.</span><span>type </span><span style="color:#f29e74;">=</span><span> AVMEDIA_TYPE_VIDEO</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#f29e74;">.</span><span>filter_frame </span><span style="color:#f29e74;">=</span><span> filter_frame</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#f29e74;">.</span><span>config_props </span><span style="color:#f29e74;">= &amp;</span><span>ff_opencl_filter_config_input</span><span style="color:#ccc9c2cc;">,
+</span><span>    }</span><span style="color:#ccc9c2cc;">,
+</span><span>    { </span><span style="color:#ffcc66;">NULL </span><span>}
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">static const</span><span> AVFilterPad colorkey_opencl_outputs[] </span><span style="color:#f29e74;">= </span><span>{
+</span><span>    {
+</span><span>        </span><span style="color:#f29e74;">.</span><span>name </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;default&quot;</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#f29e74;">.</span><span>type </span><span style="color:#f29e74;">=</span><span> AVMEDIA_TYPE_VIDEO</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#f29e74;">.</span><span>config_props </span><span style="color:#f29e74;">= &amp;</span><span>ff_opencl_filter_config_output</span><span style="color:#ccc9c2cc;">,
+</span><span>    }</span><span style="color:#ccc9c2cc;">,
+</span><span>    { </span><span style="color:#ffcc66;">NULL </span><span>}
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>Here we're specifying arrays of input and output pads that our filter will have (&quot;pad&quot; is just a term used to refer to an input or output of a filter). In both cases, we define a single pad; the <code>colorkey</code> filter takes a single input and maps it to a single output. (When would you need multiple? Well, in the case of the <code>overlay</code> filter, you'll need two inputs: one for the base and one to overlay on top of it.) In both cases we also pass externally-defined functions as the <code>config_props</code> callback. The one callback that we need to write a function for is <code>filter_frame</code>, which you should recognize from our overview of the CPU filter.</p>
+<p>Before we do that, though, let's create the OpenCL kernel that we're going to be using inside that function.</p>
+<h3 id="writing-the-opencl-kernel">Writing the OpenCL Kernel</h3>
+<p>Create a new file (<code>libavfilter/opencl/colorkey.cl</code>). Within it, we're going to add the following:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">const</span><span> sampler_t sampler </span><span style="color:#f29e74;">=</span><span> CLK_NORMALIZED_COORDS_FALSE </span><span style="color:#f29e74;">|
+</span><span>                          CLK_FILTER_NEAREST</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>__kernel </span><span style="color:#ffa759;">void </span><span style="color:#ffd580;">colorkey</span><span>(
+</span><span>    __read_only  image2d_t </span><span style="color:#ffcc66;">src</span><span style="color:#ccc9c2cc;">,
+</span><span>    __write_only image2d_t </span><span style="color:#ffcc66;">dst</span><span style="color:#ccc9c2cc;">,
+</span><span>    float4 </span><span style="color:#ffcc66;">colorkey_rgba</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffa759;">float</span><span> similarity
+</span><span>) {
+</span><span>    int2 loc </span><span style="color:#f29e74;">= </span><span>(int2)(</span><span style="color:#ffd580;">get_global_id</span><span>(</span><span style="color:#ffcc66;">0</span><span>)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">get_global_id</span><span>(</span><span style="color:#ffcc66;">1</span><span>))</span><span style="color:#ccc9c2cc;">;
+</span><span>    float4 pixel </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">read_imagef</span><span>(src</span><span style="color:#ccc9c2cc;">,</span><span> sampler</span><span style="color:#ccc9c2cc;">,</span><span> loc)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">float</span><span> diff </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">distance</span><span>(pixel</span><span style="color:#f29e74;">.</span><span>xyz</span><span style="color:#ccc9c2cc;">,</span><span> colorkey_rgba</span><span style="color:#f29e74;">.</span><span>xyz)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    pixel</span><span style="color:#f29e74;">.</span><span>s3 </span><span style="color:#f29e74;">= </span><span>(diff </span><span style="color:#f29e74;">&gt;</span><span> similarity) </span><span style="color:#f29e74;">? </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ffa759;">f </span><span style="color:#f29e74;">: </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ffa759;">f</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">write_imagef</span><span>(dst</span><span style="color:#ccc9c2cc;">,</span><span> loc</span><span style="color:#ccc9c2cc;">,</span><span> pixel)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>This kernel first grabs a pixel based on the return values of the <code>get_global_id</code> function that OpenCL provides (and with certain sampling flags set via the <code>sampler</code> variable; you can look up the flags <a href="https://www.khronos.org/registry/OpenCL/sdk/1.2/docs/man/xhtml/">here</a>). Every invocation of the kernel is going to be assigned unique IDs within a range that we'll specify when we queue the kernel to be executed; these unique IDs allow us to touch every pixel in the input image without using loops!</p>
+<p>Everything after obtaining the pixel is directly translated from the CPU <code>do_colorkey_pixel</code> function; we calculate the &quot;distance&quot; (difference) between the pixel's RGB components and the key colors' RGB components using an OpenCL built-in function and then set the pixel's alpha value based upon a comparison between that difference and the given <code>similarity</code> value.</p>
+<p>Now for the aforementioned additional kernel:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span>__kernel </span><span style="color:#ffa759;">void </span><span style="color:#ffd580;">colorkey_blend</span><span>(
+</span><span>    __read_only  image2d_t </span><span style="color:#ffcc66;">src</span><span style="color:#ccc9c2cc;">,
+</span><span>    __write_only image2d_t </span><span style="color:#ffcc66;">dst</span><span style="color:#ccc9c2cc;">,
+</span><span>    float4 </span><span style="color:#ffcc66;">colorkey_rgba</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffa759;">float </span><span style="color:#ffcc66;">similarity</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffa759;">float</span><span> blend
+</span><span>) {
+</span><span>    int2 loc </span><span style="color:#f29e74;">= </span><span>(int2)(</span><span style="color:#ffd580;">get_global_id</span><span>(</span><span style="color:#ffcc66;">0</span><span>)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">get_global_id</span><span>(</span><span style="color:#ffcc66;">1</span><span>))</span><span style="color:#ccc9c2cc;">;
+</span><span>    float4 pixel </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">read_imagef</span><span>(src</span><span style="color:#ccc9c2cc;">,</span><span> sampler</span><span style="color:#ccc9c2cc;">,</span><span> loc)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">float</span><span> diff </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">distance</span><span>(pixel</span><span style="color:#f29e74;">.</span><span>xyz</span><span style="color:#ccc9c2cc;">,</span><span> colorkey_rgba</span><span style="color:#f29e74;">.</span><span>xyz)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    pixel</span><span style="color:#f29e74;">.</span><span>s3 </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clamp</span><span>((diff </span><span style="color:#f29e74;">-</span><span> similarity) </span><span style="color:#f29e74;">/</span><span> blend</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ffa759;">f</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ffa759;">f</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">write_imagef</span><span>(dst</span><span style="color:#ccc9c2cc;">,</span><span> loc</span><span style="color:#ccc9c2cc;">,</span><span> pixel)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>This kernel, aptly named <code>colorkey_blend</code>, is a copy of <code>colorkey</code> with the addition of a <code>blend</code> argument that gets used in the calculation of the pixel's alpha value. Having two kernels allows us to remove an if branch: either we are blending or we aren't. This could potentially improve performance on some hardware (although I didn't notice any improvement on my own).</p>
+<p>The OpenCL side is now complete! Let's return to CPU land and run the kernel(s).</p>
+<h3 id="running-the-opencl-kernel">Running the OpenCL Kernel</h3>
+<p>The <code>filter_frame</code> callback is where we're going to be executing a kernel, and it's going to be rather long, so instead of inserting it in its entirety here I'll insert sections of it and discuss those. Note that they belong within the following function body:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">filter_frame</span><span>(AVFilterLink </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">link</span><span style="color:#ccc9c2cc;">,</span><span> AVFrame </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">input_frame</span><span>)
+</span><span>{
+</span><span>    AVFilterContext </span><span style="color:#f29e74;">*</span><span>avctx </span><span style="color:#f29e74;">=</span><span> link</span><span style="color:#f29e74;">-&gt;</span><span>dst</span><span style="color:#ccc9c2cc;">;
+</span><span>    AVFilterLink </span><span style="color:#f29e74;">*</span><span>outlink </span><span style="color:#f29e74;">=</span><span> avctx</span><span style="color:#f29e74;">-&gt;</span><span>outputs[</span><span style="color:#ffcc66;">0</span><span>]</span><span style="color:#ccc9c2cc;">;
+</span><span>    ColorkeyOpenCLContext </span><span style="color:#f29e74;">*</span><span>colorkey_ctx </span><span style="color:#f29e74;">=</span><span> avctx</span><span style="color:#f29e74;">-&gt;</span><span>priv</span><span style="color:#ccc9c2cc;">;
+</span><span>    AVFrame </span><span style="color:#f29e74;">*</span><span>output_frame </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">NULL</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">int</span><span> err</span><span style="color:#ccc9c2cc;">;
+</span><span>    cl_int cle</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="font-style:italic;color:#5ccfe6;">size_t</span><span> global_work[</span><span style="color:#ffcc66;">2</span><span>]</span><span style="color:#ccc9c2cc;">;
+</span><span>    cl_mem src</span><span style="color:#ccc9c2cc;">,</span><span> dst</span><span style="color:#ccc9c2cc;">;
+</span><span>    
+</span><span style="color:#73d0ff;">fail</span><span style="color:#ccc9c2cc;">:
+</span><span>    </span><span style="color:#ffd580;">clFinish</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">av_frame_free</span><span>(</span><span style="color:#f29e74;">&amp;</span><span>input_frame)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">av_frame_free</span><span>(</span><span style="color:#f29e74;">&amp;</span><span>output_frame)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return</span><span> err</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>Here we have:</p>
+<ul>
+<li>Our filter instances' <code>AVFilterContext</code> which we obtain a pointer to via <code>link</code> (the <code>link</code> here is between our filter and the one preceding it)</li>
+<li>A link to the filter we are outputting to (<code>outlink</code>)</li>
+<li>The specific <code>ColorKeyOpenCLContext</code> we wrote above that contains our state, obtained from the generic context</li>
+<li>Various variables that will be initialized later on and used throughout the function</li>
+<li>A <code>fail</code> label that is jumped to whenever we encounter an error and need to exit the function</li>
+</ul>
+<p>Starting off, we need to do some validation and intialization:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="font-style:italic;color:#5c6773;">// excerpt from `filter_frame`
+</span><span>
+</span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>input_frame</span><span style="color:#f29e74;">-&gt;</span><span>hw_frames_ctx)
+</span><span>    </span><span style="color:#ffa759;">return </span><span style="color:#ffd580;">AVERROR</span><span>(EINVAL)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>initialized) {
+</span><span>    AVHWFramesContext </span><span style="color:#f29e74;">*</span><span>input_frames_ctx </span><span style="color:#f29e74;">=
+</span><span>        (AVHWFramesContext</span><span style="color:#f29e74;">*</span><span>)input_frame</span><span style="color:#f29e74;">-&gt;</span><span>hw_frames_ctx</span><span style="color:#f29e74;">-&gt;</span><span>data</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">int</span><span> fmt </span><span style="color:#f29e74;">=</span><span> input_frames_ctx</span><span style="color:#f29e74;">-&gt;</span><span>sw_format</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Make sure the input is a format we support
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(fmt </span><span style="color:#f29e74;">!=</span><span> AV_PIX_FMT_ARGB </span><span style="color:#f29e74;">&amp;&amp;
+</span><span>        fmt </span><span style="color:#f29e74;">!=</span><span> AV_PIX_FMT_RGBA </span><span style="color:#f29e74;">&amp;&amp;
+</span><span>        fmt </span><span style="color:#f29e74;">!=</span><span> AV_PIX_FMT_ABGR </span><span style="color:#f29e74;">&amp;&amp;
+</span><span>        fmt </span><span style="color:#f29e74;">!=</span><span> AV_PIX_FMT_BGRA
+</span><span>    ) {
+</span><span>        </span><span style="color:#ffd580;">av_log</span><span>(avctx</span><span style="color:#ccc9c2cc;">,</span><span> AV_LOG_ERROR</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;unsupported (non-RGB) format in colorkey_opencl.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>        err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">AVERROR</span><span>(ENOSYS)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">colorkey_opencl_init</span><span>(avctx)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(err </span><span style="color:#f29e74;">&lt; </span><span style="color:#ffcc66;">0</span><span>)
+</span><span>        </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>Let's break this down. The first if statement is checking to make sure that the <code>hw_frames_ctx</code> we'll need to be accessing is non-null. The second one contains code to be run if the <code>OpenCLFilterContext</code> within our filter's context structure hasn't been initialized (translation: this is the first time <code>filter_frame</code> has been called for this instance of the filter). Here we will, of course, run initialization code for the OpenCL stuff in our context, but it's also when we will perform a critical check for our particular filter. Background information: FFmpeg does not yet have code written (at the time of this writing) to negotiate formats when a hardware frame is involved. This means that while the CPU filter is simply able to provide a <code>query_formats</code> callback that tells FFmpeg's filter negotiation code what formats it supports and have that taken care of, OpenCL filters are stuck manually checking that that the input frame they've been given is in a format that they support and erroring if it is not. In our case, our filter is only going to support RGB input (just like the CPU filter it's ported from), so we manually check that that's what we're given inside of another if statement.</p>
+<p>After making that check, we perform a call to <code>colorkey_opencl_init</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">static int </span><span style="color:#ffd580;">colorkey_opencl_init</span><span>(AVFilterContext </span><span style="color:#f29e74;">*</span><span style="color:#ffcc66;">avctx</span><span>)
+</span><span>{
+</span><span>    ColorkeyOpenCLContext </span><span style="color:#f29e74;">*</span><span>ctx </span><span style="color:#f29e74;">=</span><span> avctx</span><span style="color:#f29e74;">-&gt;</span><span>priv</span><span style="color:#ccc9c2cc;">;
+</span><span>    cl_int cle</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">int</span><span> err</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">ff_opencl_filter_load_program</span><span>(avctx</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>ff_opencl_source_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">1</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(err </span><span style="color:#f29e74;">&lt; </span><span style="color:#ffcc66;">0</span><span>)
+</span><span>        </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clCreateCommandQueue</span><span>(
+</span><span>        ctx</span><span style="color:#f29e74;">-&gt;</span><span>ocf</span><span style="color:#f29e74;">.</span><span>hwctx</span><span style="color:#f29e74;">-&gt;</span><span>context</span><span style="color:#ccc9c2cc;">,
+</span><span>        ctx</span><span style="color:#f29e74;">-&gt;</span><span>ocf</span><span style="color:#f29e74;">.</span><span>hwctx</span><span style="color:#f29e74;">-&gt;</span><span>device_id</span><span style="color:#ccc9c2cc;">,
+</span><span>        </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>cle
+</span><span>    )</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffd580;">CL_FAIL_ON_ERROR</span><span>(</span><span style="color:#ffd580;">AVERROR</span><span>(EIO)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;Failed to create OpenCL command queue </span><span style="color:#ffcc66;">%d</span><span style="color:#bae67e;">.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span style="color:#ccc9c2cc;">,</span><span> cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>blend </span><span style="color:#f29e74;">&gt; </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0001</span><span>) {
+</span><span>        ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clCreateKernel</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>ocf</span><span style="color:#f29e74;">.</span><span>program</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;colorkey_blend&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffd580;">CL_FAIL_ON_ERROR</span><span>(</span><span style="color:#ffd580;">AVERROR</span><span>(EIO)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;Failed to create colorkey_blend kernel: </span><span style="color:#ffcc66;">%d</span><span style="color:#bae67e;">.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span style="color:#ccc9c2cc;">,</span><span> cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>    } </span><span style="color:#ffa759;">else </span><span>{
+</span><span>        ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clCreateKernel</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>ocf</span><span style="color:#f29e74;">.</span><span>program</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;colorkey&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffd580;">CL_FAIL_ON_ERROR</span><span>(</span><span style="color:#ffd580;">AVERROR</span><span>(EIO)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;Failed to create colorkey kernel: </span><span style="color:#ffcc66;">%d</span><span style="color:#bae67e;">.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span style="color:#ccc9c2cc;">,</span><span> cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">for </span><span>(</span><span style="color:#ffa759;">int</span><span> i </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">;</span><span> i </span><span style="color:#f29e74;">&lt; </span><span style="color:#ffcc66;">4</span><span style="color:#ccc9c2cc;">; </span><span style="color:#f29e74;">++</span><span>i) {
+</span><span>        ctx</span><span style="color:#f29e74;">-&gt;</span><span>colorkey_rgba_float</span><span style="color:#f29e74;">.</span><span>s[i] </span><span style="color:#f29e74;">= </span><span>(</span><span style="color:#ffa759;">float</span><span>)ctx</span><span style="color:#f29e74;">-&gt;</span><span>colorkey_rgba[i] </span><span style="color:#f29e74;">/ </span><span style="color:#ffcc66;">255</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    ctx</span><span style="color:#f29e74;">-&gt;</span><span>initialized </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#73d0ff;">fail</span><span style="color:#ccc9c2cc;">:
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue)
+</span><span>        </span><span style="color:#ffd580;">clReleaseCommandQueue</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey)
+</span><span>        </span><span style="color:#ffd580;">clReleaseKernel</span><span>(ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return</span><span> err</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>This function loads the OpenCL program that we wrote (we'll talk about where <code>ff_opencl_source_colorkey</code> is defined later), creates a command queue, sets up the appropriate kernel based on our instances' <code>blend</code> value, and initializes the normalized float version of the key color.</p>
+<p>Next we have some initialization that occurs for every call to <code>filter_frame</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="font-style:italic;color:#5c6773;">// excerpt from `filter_frame`
+</span><span>
+</span><span>src </span><span style="color:#f29e74;">= </span><span>(cl_mem)input_frame</span><span style="color:#f29e74;">-&gt;</span><span>data[</span><span style="color:#ffcc66;">0</span><span>]</span><span style="color:#ccc9c2cc;">;
+</span><span>output_frame </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">ff_get_video_buffer</span><span>(outlink</span><span style="color:#ccc9c2cc;">,</span><span> outlink</span><span style="color:#f29e74;">-&gt;</span><span>w</span><span style="color:#ccc9c2cc;">,</span><span> outlink</span><span style="color:#f29e74;">-&gt;</span><span>h)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>output_frame) {
+</span><span>    err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">AVERROR</span><span>(ENOMEM)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span><span>dst </span><span style="color:#f29e74;">= </span><span>(cl_mem)output_frame</span><span style="color:#f29e74;">-&gt;</span><span>data[</span><span style="color:#ffcc66;">0</span><span>]</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>First, we set the <code>src</code> variable to the image data that we were given as input, cast as <code>cl_mem</code> for usage with OpenCL. Since we know we will be working with RGB input we can simply grab the first plane from the <code>data</code> array (RGB data is always stored in a single plane). We then set <code>output_frame</code> to a buffer with the appropriate dimensions for the filter we are outputting to and make sure that the allocation of the buffer was successful. Finally, we set the <code>dst</code> variable to the first plane of the data of our output buffer, just like what we did for the input.</p>
+<p>There's still one more thing we need to do before we can run our OpenCL kernel: we need to pass it its arguments.</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="font-style:italic;color:#5c6773;">// excerpt from `filter_frame`
+</span><span>
+</span><span style="color:#ffd580;">CL_SET_KERNEL_ARG</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">,</span><span> cl_mem</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>src)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffd580;">CL_SET_KERNEL_ARG</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">1</span><span style="color:#ccc9c2cc;">,</span><span> cl_mem</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>dst)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffd580;">CL_SET_KERNEL_ARG</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">2</span><span style="color:#ccc9c2cc;">,</span><span> cl_float4</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>colorkey_rgba_float)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffd580;">CL_SET_KERNEL_ARG</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">3</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">float</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>similarity)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">if </span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>blend </span><span style="color:#f29e74;">&gt; </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">.</span><span style="color:#ffcc66;">0001</span><span>) {
+</span><span>    </span><span style="color:#ffd580;">CL_SET_KERNEL_ARG</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">4</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">float</span><span style="color:#ccc9c2cc;">, </span><span style="color:#f29e74;">&amp;</span><span>colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>blend)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>FFmpeg sticks to an older version of the OpenCL API for compatibility, which unfortunately means we're stuck setting kernel arguments based on an index number rather than via the name of the argument (which is more error-prone). FFmpeg has a helper macro already written (<code>CL_SET_KERNEL_ARG</code>) that makes setting arguments quick and easy for us despite this. Note that we set the <code>blend</code> argument based on the same condition we wrote to determine which kernel to use; if we're not doing blending then we're not even able to pass that argument as it won't be a part of our kernel.</p>
+<p>With all of that out of the way, it's finally time to run the kernel!</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span>err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">ff_opencl_filter_work_size_from_image</span><span>(avctx</span><span style="color:#ccc9c2cc;">,</span><span> global_work</span><span style="color:#ccc9c2cc;">,</span><span> input_frame</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">0</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">if </span><span>(err </span><span style="color:#f29e74;">&lt; </span><span style="color:#ffcc66;">0</span><span>)
+</span><span>    </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>cle </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clEnqueueNDRangeKernel</span><span>(
+</span><span>    colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue</span><span style="color:#ccc9c2cc;">,
+</span><span>    colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>kernel_colorkey</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffcc66;">2</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffcc66;">NULL</span><span style="color:#ccc9c2cc;">,
+</span><span>    global_work</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffcc66;">NULL</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffcc66;">0</span><span style="color:#ccc9c2cc;">,
+</span><span>    </span><span style="color:#ffcc66;">NULL</span><span style="color:#ccc9c2cc;">,
+</span><span>    NULL
+</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffd580;">CL_FAIL_ON_ERROR</span><span>(</span><span style="color:#ffd580;">AVERROR</span><span>(EIO)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;Failed to enqueue colorkey kernel: </span><span style="color:#ffcc66;">%d</span><span style="color:#bae67e;">.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span style="color:#ccc9c2cc;">,</span><span> cle)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="font-style:italic;color:#5c6773;">// Run queued kernel
+</span><span>cle </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">clFinish</span><span>(colorkey_ctx</span><span style="color:#f29e74;">-&gt;</span><span>command_queue)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffd580;">CL_FAIL_ON_ERROR</span><span>(</span><span style="color:#ffd580;">AVERROR</span><span>(EIO)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;Failed to finish command queue: </span><span style="color:#ffcc66;">%d</span><span style="color:#bae67e;">.</span><span style="color:#95e6cb;">\n</span><span style="color:#bae67e;">&quot;</span><span style="color:#ccc9c2cc;">,</span><span> cle)</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>We enqueue the kernel to be executed using the <code>clEnqueueNDRangeKernel</code> function (which you can look up <a href="https://www.khronos.org/registry/OpenCL/sdk/1.2/docs/man/xhtml/">here</a>). Among other things, we pass it our command queue and kernel along with a <code>global_work</code> variable. Before making this call, we've made a call to <code>ff_opencl_filter_work_size_from_image</code> to initialize <code>global_work</code>; it's a helper function that determines the work size based on the dimensions of our <code>input_frame</code>. This <code>global_work</code> array specifies the range that OpenCL will choose IDs from to hand to kernel instances.</p>
+<p>After enqueuing the kernel, it's a simple matter of calling <code>clFinish</code> on the command queue to run the kernel to completion across the <code>global_work</code> range (plus the appropriate error handling).</p>
+<p>That brings us to the conclusion of <code>filter_frame</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span>err </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">av_frame_copy_props</span><span>(output_frame</span><span style="color:#ccc9c2cc;">,</span><span> input_frame)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">if </span><span>(err </span><span style="color:#f29e74;">&lt; </span><span style="color:#ffcc66;">0</span><span>)
+</span><span>    </span><span style="color:#ffa759;">goto</span><span> fail</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffd580;">av_frame_free</span><span>(</span><span style="color:#f29e74;">&amp;</span><span>input_frame)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">return </span><span style="color:#ffd580;">ff_filter_frame</span><span>(outlink</span><span style="color:#ccc9c2cc;">,</span><span> output_frame)</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>At the end of the function, we copy the metadata of our <code>input_frame</code> to the <code>output_frame</code> using <code>av_frame_copy_props</code>, free <code>input_frame</code>, and return the result of <code>ff_filter_frame</code>, a function that forwards <code>output_frame</code> to the next filter.</p>
+<p>That's all for the <code>colorkey_opencl</code> filter implementation!</p>
+<h3 id="hooking-the-filter-into-the-rest-of-the-framework">Hooking the Filter Into the Rest of the Framework</h3>
+<p>In order to compile FFmpeg with our filter enabled, we'll need to add some lines to a few different files. In <code>libavfilter/Makefile</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span>OBJS</span><span style="color:#f29e74;">-</span><span>$(CONFIG_COLORKEY_OPENCL_FILTER) </span><span style="color:#f29e74;">+=</span><span> vf_colorkey_opencl</span><span style="color:#f29e74;">.</span><span>o opencl</span><span style="color:#f29e74;">.</span><span>o \
+</span><span>                                         opencl</span><span style="color:#f29e74;">/</span><span>colorkey</span><span style="color:#f29e74;">.</span><span>o
+</span></code></pre>
+<p>This line adds the OpenCl code that we wrote into the build system. Next, in <code>libavfilter/allfilters.c</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">extern</span><span> AVFilter ff_vf_colorkey_opencl</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>The <code>allfilters</code> file, as the name would suggest, simply lists all of the filters included in FFmpeg, and we add ours there accordingly. Finally, in <code>libavfilter/opencl_source.h</code>:</p>
+<pre data-lang="c" style="background-color:#212733;color:#ccc9c2;" class="language-c "><code class="language-c" data-lang="c"><span style="color:#ffa759;">extern const char </span><span style="color:#f29e74;">*</span><span>ff_opencl_source_colorkey</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>This file collects all of the compiled OpenCL sources. The <code>ff_opencl_source_colorkey</code> symbol is the same one that we'll reference later when we call <code>ff_opencl_filter_load_program</code> within <code>colorkey_opencl_init</code>.</p>
+<h3 id="testing-the-filter">Testing the Filter</h3>
+<p>We can now compile FFmpeg again, this time with our filter being built as well!</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>make -j 8
+</span></code></pre>
+<p>Let's try the filter. The following command takes our trimmed test video and an image, uploads the video to the GPU in the RGBA format and runs <code>colorkey_opencl</code> on it, downloads the processed frames back off of the GPU and then uses the <code>overlay</code> CPU filter to overlay the video on top of the provided image.</p>
+<pre data-lang="bash" style="background-color:#212733;color:#ccc9c2;" class="language-bash "><code class="language-bash" data-lang="bash"><span style="color:#ffd580;">time</span><span> ./ffmpeg</span><span style="color:#ffcc66;"> -i</span><span> ../trimmed_video.mp4</span><span style="color:#ffcc66;"> -i</span><span> img.jpg</span><span style="color:#ffcc66;"> -init_hw_device </span><span style="color:#ccc9c2cc;">\
+</span><span>opencl=gpu</span><span style="color:#ffcc66;"> -filter_hw_device</span><span> gpu</span><span style="color:#ffcc66;"> -filter_complex </span><span style="color:#ccc9c2cc;">\
+</span><span style="color:#bae67e;">&quot;[0:v]format=rgba, hwupload, colorkey_opencl=yellow:0.4:0.2, hwdownload, format=rgba[over];[1:v][over]overlay&quot; </span><span style="color:#ccc9c2cc;">\
+</span><span>../trimmed_video_colorkey.mp4
+</span></code></pre>
+<p>The times for that invocation:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m38.056s
+</span><span>user    3m1.398s
+</span><span>sys     0m2.892s
+</span></code></pre>
+<p>For comparison, let's test the CPU version of the filter:</p>
+<pre data-lang="bash" style="background-color:#212733;color:#ccc9c2;" class="language-bash "><code class="language-bash" data-lang="bash"><span style="color:#ffd580;">time</span><span> ./ffmpeg</span><span style="color:#ffcc66;"> -i</span><span> ../trimmed_video.mp4</span><span style="color:#ffcc66;"> -i</span><span> img.jpg</span><span style="color:#ffcc66;"> -filter_complex </span><span style="color:#ccc9c2cc;">\
+</span><span style="color:#bae67e;">&quot;[0:v]colorkey=yellow:0.4:0.2[ckout];[1:v][ckout]overlay&quot; </span><span style="color:#ccc9c2cc;">\
+</span><span>../trimmed_video_colorkey_cpu.mp4
+</span></code></pre>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m43.661s
+</span><span>user    3m34.862s
+</span><span>sys     0m1.796s
+</span></code></pre>
+<p>Similar to the <code>avgblur</code> comparison that we made all the way at the beginning of this blog post, the OpenCL filter is reducing overall runtime by over 10% and decreasing total CPU time despite the overhead of uploading and downloading frames to and from the GPU.</p>
+<h3 id="side-note-remember-that-bugs-can-occur-outside-of-your-code">Side Note: Remember That Bugs Can Occur Outside of Your Code</h3>
+<p>During the process of writing this filter I actually ran into a bug in FFmpeg's OpenCL utility code. The <code>opencl_get_plane_format</code> function responsible for determining the image format that should be used when allocating an OpenCL image for the data on a plane was incorrectly setting the channel order for all RGB formats to <code>CL_RGBA</code>, causing the use of any other RGB format to result in incorrect filter output (and also causing certain RGB formats to be incorrectly reported as supported by my hardware). I submitted <a href="https://github.com/FFmpeg/FFmpeg/commit/1c50d61a5a689f8eabef37f504c6f8f33eb178ba">a patch</a> to fix this bug while wrapping up work on the filter.</p>
+<p>I bring this up to remind you, the reader, to always remember that bugs <em>can</em> occur outside of your code, too! Investigate that possibility before you spend lots of time trying to figure out what you're doing wrong like I did :).</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>Wow, that ended up being quite a few words. We've gone from (in my case) having never worked with FFmpeg's codebase to having ourselves a functioning port of a CPU filter that gets run on the GPU via the OpenCL API.</p>
+<p>Hopefully you found this post informative in some way (or at least interesting!). I have no idea if I'm going to be accepted into the Google Summer of Code program yet, but if I am, I certainly hope to write another blog post (or posts) over the course of the summer. Feel free to follow me <a href="https://twitter.com/_cldfire">on Twitter</a> if you'd like to know when those go live.</p>
+
+</div>
+
+        </div>
+
+    </body>
+
+</html>
