@@ -24,5 +24,5 @@ hyde_links = [
     { url = "https://hachyderm.io/@Cldfire", name = "Mastodon", relme = true },
     { url = "https://github.com/Cldfire", name = "GitHub", relme = true },
     { url = "https://www.linkedin.com/in/cldfire", name = "LinkedIn", relme = true },
-    { url = "/resume/", name = "Resume" },
+    { url = "/resume.pdf", name = "Resume" },
 ]
