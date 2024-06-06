@@ -34,6 +34,8 @@
       1Password browser extension.
     - Overhauled a complex, years-old browser extension build system used weekly by
       over sixty developers. Decreased warm build times by over 90% (1m 20s -> 5s).
+      #styled-link("https://blog.1password.com/new-extension-build-system",
+      )[blog.1password.com/new-extension-build-system]
     - Worked on high-impact CI improvements with a cross-functional team, resulting in
       a 50% and 60% reduction to p50 and p90 merge request pipeline times
       (respectively).
@@ -47,7 +49,6 @@
       on the App Store.
     - Accelerated developers & teams across the company by sharing knowledge and
       providing guidance/mentoring on a day-to-day basis.
-    - Built well-received internal tools and valuable testing frameworks.
 
     === Intern\
     _1Password_\
