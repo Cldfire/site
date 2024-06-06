@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+      <!-- Enable responsiveness on mobile devices-->
+      <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+      <title>Cldfire&#x27;s Blog</title>
+
+      <!-- CSS -->
+      <link rel="stylesheet" href="https://cldfire.dev/print.css" media="print">
+      <link rel="stylesheet" href="https://cldfire.dev/poole.css">
+      <link rel="stylesheet" href="https://cldfire.dev/hyde.css">
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface">
+
+      
+
+      
+    <link rel=icon type="image/png" href=/favicon.png>
+
+    </head>
+
+    <body class=" layout-reverse">
+        
+            <div class="sidebar">
+                <div class="container sidebar-sticky">
+                    <div class="sidebar-about">
+                        
+                            <a href="https:&#x2F;&#x2F;cldfire.dev"><h1>Cldfire&#x27;s Blog</h1></a>
+                            
+                            <p class="lead">Primarily focused on programming, but other topics may occasionally appear</p>
+                            
+                        
+                    </div>
+
+                    <ul class="sidebar-nav">
+                        
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;twitter.com&#x2F;_cldfire">Twitter</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;hachyderm.io&#x2F;@Cldfire">Mastodon</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;github.com&#x2F;Cldfire">GitHub</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;cldfire">LinkedIn</a></li>
+                        
+                        <li class="sidebar-nav-item"><a  href="&#x2F;resume.pdf">Resume</a></li>
+                        
+                        
+                    </ul>
+                </div>
+            </div>
+        
+
+        <div class="content container">
+            
+<div class="post">
+  <h1 class="post-title">When `setTimeout` is a blocking call after all</h1>
+  <!-- TODO: Make this configurable in the theme? -->
+  <span class="post-date">July  9, 2023</span>
+  <p>I've spent my spare time over the last few days porting some React Native components to the web for an open source product I use. One of them was an autocomplete component built on top of the <a href="https://www.downshift-js.com">Downshift</a> library. These React Native components were old, which meant they were class components; in turn, this meant the legacy <a href="https://github.com/downshift-js/downshift/blob/20314b5f560921b8e762790dfa45386bf7916a54/src/downshift.js"><code>downshift.js</code></a> class component was in use.</p>
+<p>So I'm humming along getting all these React Native components running on the web, and suddenly I run into some strange behavior. In macOS Safari with mouse + keyboard the autocomplete component was working great; click one of the autocomplete options and it would immediately close the autocomplete interface and place your selection in the input field. In iOS Safari, however, there was a significant delay between tapping an autocomplete selection and the resulting action being taken. It made the interface feel laggy and it made for an unpleasant experience.</p>
+<p>Delayed reponses to web touch interactions aren't necessarily strange on iOS; many of us are familiar with <a href="https://stackoverflow.com/questions/12238587/eliminate-300ms-delay-on-click-events-in-mobile-safari">Safari's tendency to delay click events by 300ms</a>. This gives WebKit the chance to determine between a single tap (click a field) and a double-tap (zoom in to the web page). I immediately suspected this was involved in the tap delay I was experiencing in the autocomplete component, and I started applying some of the known workarounds. Strangely, none of them were successful in eliminating the delay. That's when I realized zoom was already disabled for the entire SPA via a <code>user-scalable=no</code> viewport tag, so my guess was wrong. Something else had to be introducing the delay.</p>
+<p>What could it be though? I started to investigate the event handlers registered on the autocomplete suggestion items. The two important ones turned out to be <code>onMouseMove</code> and <code>onClick</code>, both provided by the Downshift library. I wrapped their event handlers in my own closures, added some logging, and lo and behold:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>20:18:35.334 mousemove event fired
+</span><span>20:18:35.604 onclick fired
+</span></code></pre>
+<p>The <code>click</code> event was consistently being fired on the element ~250ms <em>after</em> the <code>mousemove</code> event was, but <em>only in iOS Safari when being tapped</em>. On macOS Safari the <code>click</code> event was fired immediately after the <code>mousemove</code> event as expected.</p>
+<p>Ok, I thought, so maybe the Downshift library is doing something weird on mobile that's intentionally introducing the delay here. I cracked open the source code to take a peek.</p>
+<p><a href="https://github.com/downshift-js/downshift/blob/20314b5f560921b8e762790dfa45386bf7916a54/src/downshift.js#L930-L944">Here's the <code>mousemove</code> handler they provide</a> for you to set on your autocomplete suggestion elements:</p>
+<pre data-lang="js" style="background-color:#212733;color:#ccc9c2;" class="language-js "><code class="language-js" data-lang="js"><span style="color:#73d0ff;">onMouseMove</span><span style="color:#ccc9c2cc;">: </span><span style="color:#ffd580;">callAllEventHandlers</span><span>(onMouseMove</span><span style="color:#ccc9c2cc;">, </span><span>() </span><span style="color:#ffa759;">=&gt; </span><span>{
+</span><span>  </span><span style="color:#ffa759;">if </span><span>(index </span><span style="color:#f29e74;">=== </span><span style="font-style:italic;color:#5ccfe6;">this</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">getState</span><span>()</span><span style="color:#f29e74;">.</span><span>highlightedIndex) {
+</span><span>    </span><span style="color:#ffa759;">return
+</span><span>  }
+</span><span>  </span><span style="font-style:italic;color:#5ccfe6;">this</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">setHighlightedIndex</span><span>(index</span><span style="color:#ccc9c2cc;">, </span><span>{
+</span><span>    type</span><span style="color:#ccc9c2cc;">: </span><span>stateChangeTypes</span><span style="color:#f29e74;">.</span><span>itemMouseEnter</span><span style="color:#ccc9c2cc;">,
+</span><span>  })
+</span><span>
+</span><span>  </span><span style="font-style:italic;color:#5c6773;">// We never want to manually scroll when changing state based
+</span><span>  </span><span style="font-style:italic;color:#5c6773;">// on `onMouseMove` because we will be moving the element out
+</span><span>  </span><span style="font-style:italic;color:#5c6773;">// from under the user which is currently scrolling/moving the
+</span><span>  </span><span style="font-style:italic;color:#5c6773;">// cursor
+</span><span>  </span><span style="font-style:italic;color:#5ccfe6;">this</span><span style="color:#f29e74;">.</span><span>avoidScrolling </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">true
+</span><span>  </span><span style="font-style:italic;color:#5ccfe6;">this</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">internalSetTimeout</span><span>(() </span><span style="color:#ffa759;">=&gt; </span><span>(</span><span style="font-style:italic;color:#5ccfe6;">this</span><span style="color:#f29e74;">.</span><span>avoidScrolling </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">false</span><span>)</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">250</span><span>)
+</span><span>})</span><span style="color:#ccc9c2cc;">,
+</span></code></pre>
+<p>Okkkk, not exactly what I was hoping to find. Everything here is pretty straightforward; there's a state change and a variable update. It sets <code>this.avoidScrolling</code> to <code>true</code>, along with a timeout that sets it back to <code>false</code> 250ms later... wait! We saw above that the delay between <code>mousemove</code> and <code>click</code> events was ~250ms. It must be blocking something on the value of <code>avoidScrolling</code>?</p>
+<p>...turns out it is not doing anything with the value of <code>avoidScrolling</code> that would block the <code>onclick</code> event from being fired. That doesn't make any sense though. We know the 250ms timeout lines up perfectly with the delay between events that we're seeing. We also know that <code>setTimeout</code> is a non-blocking call.</p>
+<p>Or... do we?</p>
+<p>I added one more log:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>20:18:35.334 mousemove event fired
+</span><span>20:18:35.598 settimeout callback fired
+</span><span>20:18:35.604 onclick fired
+</span></code></pre>
+<p><em>What.</em></p>
+<p><a href="https://developer.mozilla.org/en-US/docs/Web/API/setTimeout#working_with_asynchronous_functions">MDN says</a>:</p>
+<blockquote>
+<p>setTimeout() is an asynchronous function, meaning that the timer function will not pause execution of other functions in the functions stack. In other words, you cannot use setTimeout() to create a &quot;pause&quot; before the next function in the function stack fires.</p>
+</blockquote>
+<p>Now listen, I'm not generally in the business of arguing with MDN. A quick Google search for &quot;settimeout blocking react component events&quot; returned a list of results that were utterly unrelated to that entire line of thought. I couldn't deny the 250ms timeout was somehow involved in what was going on, but I spent hours digging into React and the Downshift library itself under the impression that I was more likely to find the cause of the problem there than I was trying to find a way to blame <code>setTimeout</code> for delaying the <code>click</code> event from firing.</p>
+<p>When those investigations proved fruitless, I tried a new test setup: dropping Downshift's <code>mousemove</code> handler entirely for one of my own. I added my own <code>setTimeout</code> call:</p>
+<pre data-lang="js" style="background-color:#212733;color:#ccc9c2;" class="language-js "><code class="language-js" data-lang="js"><span>onMouseMove</span><span style="color:#f29e74;">=</span><span>{</span><span style="color:#ffcc66;">_ </span><span style="color:#ffa759;">=&gt; </span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5ccfe6;">console</span><span style="color:#f29e74;">.</span><span style="color:#f28779;">log</span><span>(</span><span style="color:#bae67e;">&quot;mousemove event fired&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#f28779;">setTimeout</span><span>(() </span><span style="color:#ffa759;">=&gt; </span><span>{
+</span><span>        </span><span style="font-style:italic;color:#5ccfe6;">console</span><span style="color:#f29e74;">.</span><span style="color:#f28779;">log</span><span>(</span><span style="color:#bae67e;">&quot;settimeout callback fired&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>    }</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">250</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>}}
+</span></code></pre>
+<p>I was <em>shocked</em> to find out that this still triggered the same delay behavior from before:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>20:18:35.334 mousemove event fired
+</span><span>20:18:35.598 settimeout callback fired
+</span><span>20:18:35.604 onclick fired
+</span></code></pre>
+<p>This is as simple as it gets. The <code>setTimeout</code> callback is running nothing but <code>console.log</code>. There are no external dependencies. How on earth is this stopping the <code>click</code> event from firing until after the callback executes?</p>
+<p>I played around with the timeout value. <code>250ms</code> -&gt; <code>100ms</code> decreased the delay accordingly. <code>250ms</code> -&gt; <code>300ms</code> increased it. Oddly enough, setting it to 5000ms made the delay go away? So did 500ms. Eventually I narrowed it down: setting a timeout duration of <code>400ms</code> or less in the <code>mousemove</code> handler would prevent the <code>click</code> event from being fired until after the <code>setTimeout</code> callback finished executing, while a duration of <code>401ms</code> or more would have no such effect.</p>
+<p>At this point I knew enough to be able to get around the behavior in a couple of different ways, but I was intensely curious about what was going on here. No amount of &quot;400ms settimeout blocking events&quot; or &quot;settimeout mousemove blocks click event&quot; was turning up anything at all on Google. I cloned <code>WebKit</code> (which took a <em>hot</em> minute) and started poking around there to see if I could find anything. A search for &quot;400ms&quot; immediately turned up a very interesting layout test, <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/LayoutTests/fast/events/touch/ios/content-observation/400ms-hover-intent.html"><code>LayoutTests/fast/events/touch/ios/content-observation/400ms-hover-intent.html</code></a>, containing the following code:</p>
+<pre data-lang="js" style="background-color:#212733;color:#ccc9c2;" class="language-js "><code class="language-js" data-lang="js"><span>tapthis</span><span style="color:#f29e74;">.</span><span style="color:#f28779;">addEventListener</span><span>(</span><span style="color:#bae67e;">&quot;mousemove&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">function</span><span>( </span><span style="color:#ffcc66;">event </span><span>) {
+</span><span>    </span><span style="color:#f28779;">setTimeout</span><span>(</span><span style="color:#ffa759;">function</span><span>() {
+</span><span>        becomesVisible</span><span style="color:#f29e74;">.</span><span>style</span><span style="color:#f29e74;">.</span><span>display </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;block&quot;</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(window</span><span style="color:#f29e74;">.</span><span>testRunner)
+</span><span>             testRunner</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">notifyDone</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    }</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">400</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>}</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">false</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>
+</span><span>tapthis</span><span style="color:#f29e74;">.</span><span style="color:#f28779;">addEventListener</span><span>(</span><span style="color:#bae67e;">&quot;click&quot;</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">function</span><span>( </span><span style="color:#ffcc66;">event </span><span>) {   
+</span><span>    result</span><span style="color:#f29e74;">.</span><span>innerHTML </span><span style="color:#f29e74;">= </span><span style="color:#bae67e;">&quot;clicked&quot;</span><span style="color:#ccc9c2cc;">;
+</span><span>}</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffcc66;">false</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>Exciting! This is the first piece of content I've been able to find that seems relevant to the behavior I'm encountering. Just like I found, this test case calls <code>setTimeout</code> with a 400ms delay value in the <code>mousemove</code> event handler, and, just like I found, this results in the <code>click</code> event handler for that same element...</p>
+<p><em>not being fired at all??</em></p>
+<p>Wait, that's not right. The <code>click</code> event should still fire, albeit delayed. Why is it not firing?</p>
+<p>I couldn't immediately answer this question, so I went back to digging through search results for &quot;400ms&quot;. I stumbled upon <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L48">this constant in <code>Source/WebCore/page/ios /ContentChangeObserver.cpp</code></a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">static const</span><span> Seconds maximumDelayForTimers { </span><span style="color:#ffcc66;">400</span><span style="color:#ffa759;">_ms </span><span>}</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>This was the key to the door I needed opened. <em>Content change observation</em>. Now we can get to the bottom of what's going on here.</p>
+<p>Mouse and keyboard users have an advantage: hover and click are two separate, distinct actions. The user has full control over the timing of both, and they can wait to see the results of the first action (hover) before performing the second (click).</p>
+<p>Touchscreen users have no such ability. For them, hover and click <em>are the same action</em>: technically hovering doesn't exist at all, but because not firing <code>mousemove</code> events would break the parts of the web that are designed around them, mobile browsers choose to fire both events when the user taps the screen. This leads to a unique challenge: there are cases where websites use the <code>mousemove</code> event as a trigger to change page content. Think showing a tooltip, or maybe a hover menu. Consider the following example from a <a href="https://www.spigotmc.org">popular forums site</a>:</p>
+<div >
+  <video autoplay loop muted playsinline width="100%" src="&#x2F;media&#x2F;content_observation_example.mov"></video>
+</div>
+<p>The navbar has dropdown menu components that reveal on hover to provide access to a variety of different routes. The elements you hover over to reveal these dropdown menus, however, are also themselves clickable, taking you to the main route for that menu. On desktop you can mouse over one of the menu buttons, click it once, and go to the main route. On mobile with a touchscreen, however, the first tap reveals the dropdown menu (the hover action), and the second tap navigates to the main route (the click action). This is the browser using <strong>content observation</strong> to take your single tap action and turn it into two: hover, and click.</p>
+<p>WebKit can't get away with requiring two taps on every clickable element to account for the possibility that they have a meaningful hover action. Content observation helps compensate for this; WebKit can observe what happens in the <code>mousemove</code> event handler after it's fired. If the handler modifies the DOM in any way, WebKit can decide to block the <code>click</code>; if the handler does not modify the DOM WebKit can allow the click event to be fired. Generally all of this observation logic can happen quickly enough that it's unnoticeable; <code>setTimeout</code>, however, introduces the unfortunate possibility that a <code>mousemove</code> event could modify the DOM hundreds of milliseconds after the event handler itself has finished executing, causing WebKit to fire a <code>click</code> event for a tap action that should have been left as a hover.</p>
+<p>So what does WebKit do? Well of course, wait for the <code>setTimeout</code> callback to finish executing to be able to observe what it does, as long as the <code>setTimeout</code> delay value isn't greater than 400ms. Check out the <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/DOMTimer.cpp#L188-L213"><code>DOMTimer::install</code> implementation</a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">int </span><span>DOMTimer</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">install</span><span>(ScriptExecutionContext</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">context</span><span style="color:#ccc9c2cc;">,</span><span> Function&lt;</span><span style="color:#ffa759;">void</span><span>(ScriptExecutionContext</span><span style="color:#f29e74;">&amp;</span><span>)&gt;</span><span style="color:#f29e74;">&amp;&amp; </span><span style="color:#ffcc66;">action</span><span style="color:#ccc9c2cc;">,</span><span> Seconds </span><span style="color:#ffcc66;">timeout</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">bool </span><span style="color:#ffcc66;">oneShot</span><span>)
+</span><span>{
+</span><span>    Ref&lt;DOMTimer&gt; timer </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">adoptRef</span><span>(</span><span style="color:#f29e74;">*</span><span style="color:#ffa759;">new </span><span style="color:#ffd580;">DOMTimer</span><span>(context</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffd580;">WTFMove</span><span>(action)</span><span style="color:#ccc9c2cc;">,</span><span> timeout</span><span style="color:#ccc9c2cc;">,</span><span> oneShot))</span><span style="color:#ccc9c2cc;">;
+</span><span>    timer</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">suspendIfNeeded</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    timer</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">makeOpportunisticTaskDeferralScopeIfPossible</span><span>(context)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Keep asking for the next id until we&#39;re given one that we don&#39;t already have.
+</span><span>    </span><span style="color:#ffa759;">do </span><span>{
+</span><span>        timer</span><span style="color:#f29e74;">-&gt;</span><span>m_timeoutId </span><span style="color:#f29e74;">=</span><span> context</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">circularSequentialID</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    } </span><span style="color:#ffa759;">while </span><span>(</span><span style="color:#f29e74;">!</span><span>context</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">addTimeout</span><span>(timer</span><span style="color:#f29e74;">-&gt;</span><span>m_timeoutId</span><span style="color:#ccc9c2cc;">,</span><span> timer</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">get</span><span>()))</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    InspectorInstrumentation</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">didInstallTimer</span><span>(context</span><span style="color:#ccc9c2cc;">,</span><span> timer</span><span style="color:#f29e74;">-&gt;</span><span>m_timeoutId</span><span style="color:#ccc9c2cc;">,</span><span> timeout</span><span style="color:#ccc9c2cc;">,</span><span> oneShot)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Keep track of nested timer installs.
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(NestedTimersMap</span><span style="color:#f29e74;">*</span><span> nestedTimers </span><span style="color:#f29e74;">= </span><span>NestedTimersMap</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">instanceForContext</span><span>(context))
+</span><span>        nestedTimers</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">add</span><span>(timer</span><span style="color:#f29e74;">-&gt;</span><span>m_timeoutId</span><span style="color:#ccc9c2cc;">,</span><span> timer</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">get</span><span>())</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">#if</span><span> ENABLE(CONTENT_CHANGE_OBSERVER)
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#ffd580;">is</span><span>&lt;Document&gt;(context)) {
+</span><span>        </span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> document </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">downcast</span><span>&lt;Document&gt;(context)</span><span style="color:#ccc9c2cc;">;
+</span><span>        document</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">contentChangeObserver</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">didInstallDOMTimer</span><span>(timer</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">get</span><span>()</span><span style="color:#ccc9c2cc;">,</span><span> timeout</span><span style="color:#ccc9c2cc;">,</span><span> oneShot)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(DeferDOMTimersForScope</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">isDeferring</span><span>())
+</span><span>            document</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">domTimerHoldingTank</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">add</span><span>(timer</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">get</span><span>())</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span style="color:#ffa759;">#endif
+</span><span>    </span><span style="color:#ffa759;">return</span><span> timer</span><span style="color:#f29e74;">-&gt;</span><span>m_timeoutId</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>This is the code that handles <code>setTimeout</code> calls. There's a bit towards the end there that calls <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L302-L320"><code>didInstallDOMTimer(...)</code></a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">void </span><span>ContentChangeObserver</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">didInstallDOMTimer</span><span>(</span><span style="color:#ffa759;">const</span><span> DOMTimer</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">timer</span><span style="color:#ccc9c2cc;">,</span><span> Seconds </span><span style="color:#ffcc66;">timeout</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">bool </span><span style="color:#ffcc66;">singleShot</span><span>)
+</span><span>{
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span style="color:#ffd580;">isContentChangeObserverEnabled</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span style="color:#ffd580;">isObservingContentChanges</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span style="color:#ffd580;">isObservingDOMTimerScheduling</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#ffd580;">hasVisibleChangeState</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(m_document</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">activeDOMObjectsAreSuspended</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(timeout </span><span style="color:#f29e74;">&gt;</span><span> maximumDelayForTimers </span><span style="color:#f29e74;">|| !</span><span>singleShot)
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">LOG_WITH_STREAM</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">,</span><span> stream </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;didInstallDOMTimer: register this timer: (&quot; </span><span style="color:#f29e74;">&lt;&lt; &amp;</span><span>timer </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;) and observe when it fires.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffd580;">registerDOMTimer</span><span>(timer)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">adjustObservedState</span><span>(Event</span><span style="color:#f29e74;">::</span><span>InstalledDOMTimer)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>We can make note of the fact that the code bails if the <code>timeout</code> value is greater than <code>maximumDelayForTimers</code>, grounding our earlier discovery that values of <code>401ms</code> and above avoid triggering this behavior.</p>
+<p>The code <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L359-L362">adds the timer to a list</a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">void </span><span>ContentChangeObserver</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">registerDOMTimer</span><span>(</span><span style="color:#ffa759;">const</span><span> DOMTimer</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">timer</span><span>)
+</span><span>{
+</span><span>    m_DOMTimerList</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">add</span><span>(timer)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>Later on when the timer's callback is <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L348-L357">finished executing</a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">void </span><span>ContentChangeObserver</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">domTimerExecuteDidFinish</span><span>(</span><span style="color:#ffa759;">const</span><span> DOMTimer</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">timer</span><span>)
+</span><span>{
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>m_observedDomTimerIsBeingExecuted)
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">LOG_WITH_STREAM</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">,</span><span> stream </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;stopObservingDOMTimerExecute: stop observing (&quot; </span><span style="color:#f29e74;">&lt;&lt; &amp;</span><span>timer </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;) timer callback.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    m_observedDomTimerIsBeingExecuted </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">false</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">unregisterDOMTimer</span><span>(timer)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">adjustObservedState</span><span>(Event</span><span style="color:#f29e74;">::</span><span>EndedDOMTimerExecution)</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>The state change <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebCore/page/ios/ContentChangeObserver.cpp#L538-L691">leads to</a>:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">void </span><span>ContentChangeObserver</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">adjustObservedState</span><span>(Event </span><span style="color:#ffcc66;">event</span><span>)
+</span><span>{
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// These events (DOM timer, transition and style recalc) could trigger style changes that are candidates to visibility checking.
+</span><span>    {
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(event </span><span style="color:#f29e74;">==</span><span> Event</span><span style="color:#f29e74;">::</span><span>EndedDOMTimerExecution) {
+</span><span>            </span><span style="color:#ffa759;">if </span><span>(m_document</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">hasPendingStyleRecalc</span><span>()) {
+</span><span>                </span><span style="color:#ffd580;">setShouldObserveNextStyleRecalc</span><span>(</span><span style="color:#ffcc66;">true</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>                </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>            }
+</span><span>            </span><span style="color:#ffd580;">notifyClientIfNeeded</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>            </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>        }
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">// ...
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>which reports whether or not a content change was observed to the page code, information that can be used to determine whether or not to fire a <code>click</code> event.</p>
+<p>There's one last place we need to inspect to complete this puzzle: <a href="https://github.com/WebKit/WebKit/blob/e7780d735de3975ec8bf854e4ed70d07c7648497/Source/WebKit/WebProcess/WebPage/ios/WebPageIOS.mm#L758-L832"><code>WebPage::handleSyntheticClick</code></a>.</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">void </span><span>WebPage</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">handleSyntheticClick</span><span>(Node</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">nodeRespondingToClick</span><span style="color:#ccc9c2cc;">, </span><span style="color:#ffa759;">const</span><span> WebCore</span><span style="color:#f29e74;">::</span><span>FloatPoint</span><span style="color:#f29e74;">&amp; </span><span style="color:#ffcc66;">location</span><span style="color:#ccc9c2cc;">,</span><span> OptionSet&lt;WebEventModifier&gt; </span><span style="color:#ffcc66;">modifiers</span><span style="color:#ccc9c2cc;">,</span><span> WebCore</span><span style="color:#f29e74;">::</span><span>PointerID </span><span style="color:#ffcc66;">pointerId</span><span>)
+</span><span>{
+</span><span>    </span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> respondingDocument </span><span style="color:#f29e74;">=</span><span> nodeRespondingToClick</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">document</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> isFirstSyntheticClickOnPage </span><span style="color:#f29e74;">= !</span><span>m_hasHandledSyntheticClick</span><span style="color:#ccc9c2cc;">;
+</span><span>    m_hasHandledSyntheticClick </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">true</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">settings</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">contentChangeObserverEnabled</span><span>() </span><span style="color:#f29e74;">||</span><span> respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldDisableContentChangeObserver</span><span>() </span><span style="color:#f29e74;">||</span><span> respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldIgnoreContentObservationForSyntheticClick</span><span>(isFirstSyntheticClickOnPage)) {
+</span><span>        </span><span style="color:#ffd580;">completeSyntheticClick</span><span>(nodeRespondingToClick</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> WebCore</span><span style="color:#f29e74;">::</span><span>SyntheticClickType</span><span style="color:#f29e74;">::</span><span>OneFingerTap</span><span style="color:#ccc9c2cc;">,</span><span> pointerId)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> contentChangeObserver </span><span style="color:#f29e74;">=</span><span> respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">contentChangeObserver</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> targetNodeWentFromHiddenToVisible </span><span style="color:#f29e74;">=</span><span> contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">hiddenTouchTarget</span><span>() </span><span style="color:#f29e74;">== &amp;</span><span>nodeRespondingToClick </span><span style="color:#f29e74;">&amp;&amp; </span><span>ContentChangeObserver</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">isConsideredVisible</span><span>(nodeRespondingToClick)</span><span style="color:#ccc9c2cc;">;
+</span><span>    {
+</span><span>        </span><span style="color:#ffd580;">LOG_WITH_STREAM</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">,</span><span> stream </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;handleSyntheticClick: node(&quot; </span><span style="color:#f29e74;">&lt;&lt; &amp;</span><span>nodeRespondingToClick </span><span style="color:#f29e74;">&lt;&lt; </span><span style="color:#bae67e;">&quot;) &quot; </span><span style="color:#f29e74;">&lt;&lt;</span><span> location)</span><span style="color:#ccc9c2cc;">;
+</span><span>        ContentChangeObserver</span><span style="color:#f29e74;">::</span><span>MouseMovedScope </span><span style="color:#ffd580;">observingScope</span><span>(respondingDocument)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">*</span><span> localMainFrame </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">dynamicDowncast</span><span>&lt;LocalFrame&gt;(m_page</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">mainFrame</span><span>())</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>localMainFrame)
+</span><span>            </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> mainFrame </span><span style="color:#f29e74;">= *</span><span>localMainFrame</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffd580;">dispatchSyntheticMouseMove</span><span>(mainFrame</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> pointerId)</span><span style="color:#ccc9c2cc;">;
+</span><span>        mainFrame</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">document</span><span>()</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">updateStyleIfNeeded</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(m_isClosed)
+</span><span>            </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(targetNodeWentFromHiddenToVisible) {
+</span><span>        </span><span style="color:#ffd580;">LOG</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;handleSyntheticClick: target node was hidden and now is visible -&gt; hover.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffd580;">send</span><span>(Messages</span><span style="color:#f29e74;">::</span><span>WebPageProxy</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">DidHandleTapAsHover</span><span>())</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> nodeTriggersFastPath </span><span style="color:#f29e74;">= </span><span>[</span><span style="color:#f29e74;">&amp;</span><span>](</span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> targetNode) {
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span style="color:#ffd580;">is</span><span>&lt;Element&gt;(targetNode))
+</span><span>            </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">false</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#ffd580;">is</span><span>&lt;HTMLFormControlElement&gt;(targetNode))
+</span><span>            </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">true</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(targetNode</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">document</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldIgnoreAriaForFastPathContentObservationCheck</span><span>())
+</span><span>            </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">false</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">auto</span><span> ariaRole </span><span style="color:#f29e74;">= </span><span>AccessibilityObject</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">ariaRoleToWebCoreRole</span><span>(</span><span style="color:#ffd580;">downcast</span><span>&lt;Element&gt;(targetNode)</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">getAttribute</span><span>(HTMLNames</span><span style="color:#f29e74;">::</span><span>roleAttr))</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">return </span><span>AccessibilityObject</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">isARIAControl</span><span>(ariaRole)</span><span style="color:#ccc9c2cc;">;
+</span><span>    }</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> targetNodeTriggersFastPath </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">nodeTriggersFastPath</span><span>(nodeRespondingToClick)</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> observedContentChange </span><span style="color:#f29e74;">=</span><span> contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">observedContentChange</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> continueContentObservation </span><span style="color:#f29e74;">= !</span><span>(observedContentChange </span><span style="color:#f29e74;">==</span><span> WKContentVisibilityChange </span><span style="color:#f29e74;">||</span><span> targetNodeTriggersFastPath)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(continueContentObservation) {
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">// Wait for callback to completePendingSyntheticClickForContentChangeObserver() to decide whether to send the click event.
+</span><span>        </span><span style="color:#ffa759;">const</span><span> Seconds observationDuration </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">32</span><span style="color:#ffa759;">_ms</span><span style="color:#ccc9c2cc;">;
+</span><span>        contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">startContentObservationForDuration</span><span>(observationDuration)</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffd580;">LOG</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;handleSyntheticClick: Can&#39;t decide it yet -&gt; wait.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>        m_pendingSyntheticClickNode </span><span style="color:#f29e74;">= &amp;</span><span>nodeRespondingToClick</span><span style="color:#ccc9c2cc;">;
+</span><span>        m_pendingSyntheticClickLocation </span><span style="color:#f29e74;">=</span><span> location</span><span style="color:#ccc9c2cc;">;
+</span><span>        m_pendingSyntheticClickModifiers </span><span style="color:#f29e74;">=</span><span> modifiers</span><span style="color:#ccc9c2cc;">;
+</span><span>        m_pendingSyntheticClickPointerId </span><span style="color:#f29e74;">=</span><span> pointerId</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>    }
+</span><span>    contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">stopContentObservation</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">callOnMainRunLoop</span><span>([protectedThis </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">Ref </span><span>{ </span><span style="color:#f29e74;">*</span><span style="font-style:italic;color:#5ccfe6;">this </span><span>}</span><span style="color:#ccc9c2cc;">,</span><span> targetNode </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">Ref</span><span>&lt;Node&gt;(nodeRespondingToClick)</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> observedContentChange</span><span style="color:#ccc9c2cc;">,</span><span> pointerId] {
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(protectedThis</span><span style="color:#f29e74;">-&gt;</span><span>m_isClosed </span><span style="color:#f29e74;">|| !</span><span>protectedThis</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">corePage</span><span>())
+</span><span>            </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span>        </span><span style="color:#ffa759;">auto</span><span> shouldStayAtHoverState </span><span style="color:#f29e74;">=</span><span> observedContentChange </span><span style="color:#f29e74;">==</span><span> WKContentVisibilityChange</span><span style="color:#ccc9c2cc;">;
+</span><span>        </span><span style="color:#ffa759;">if </span><span>(shouldStayAtHoverState) {
+</span><span>            </span><span style="font-style:italic;color:#5c6773;">// The move event caused new contents to appear. Don&#39;t send synthetic click event, but just ensure that the mouse is on the most recent content.
+</span><span>            </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">*</span><span> localMainFrame </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">dynamicDowncast</span><span>&lt;WebCore</span><span style="color:#f29e74;">::</span><span>LocalFrame&gt;(protectedThis</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">corePage</span><span>()</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">mainFrame</span><span>()))
+</span><span>                </span><span style="color:#ffd580;">dispatchSyntheticMouseMove</span><span>(</span><span style="color:#f29e74;">*</span><span>localMainFrame</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> pointerId)</span><span style="color:#ccc9c2cc;">;
+</span><span>            </span><span style="color:#ffd580;">LOG</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;handleSyntheticClick: Observed meaningful visible change -&gt; hover.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>            protectedThis</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">send</span><span>(Messages</span><span style="color:#f29e74;">::</span><span>WebPageProxy</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">DidHandleTapAsHover</span><span>())</span><span style="color:#ccc9c2cc;">;
+</span><span>            </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>        }
+</span><span>        </span><span style="color:#ffd580;">LOG</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;handleSyntheticClick: calling completeSyntheticClick -&gt; click.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>        protectedThis</span><span style="color:#f29e74;">-&gt;</span><span style="color:#ffd580;">completeSyntheticClick</span><span>(targetNode</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> WebCore</span><span style="color:#f29e74;">::</span><span>SyntheticClickType</span><span style="color:#f29e74;">::</span><span>OneFingerTap</span><span style="color:#ccc9c2cc;">,</span><span> pointerId)</span><span style="color:#ccc9c2cc;">;
+</span><span>    })</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>At the beginning of the function we see some conditions that can cause the <code>click</code> event to be fired immediately without any further delay:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> respondingDocument </span><span style="color:#f29e74;">=</span><span> nodeRespondingToClick</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">document</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">auto</span><span> isFirstSyntheticClickOnPage </span><span style="color:#f29e74;">= !</span><span>m_hasHandledSyntheticClick</span><span style="color:#ccc9c2cc;">;
+</span><span>m_hasHandledSyntheticClick </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">true</span><span style="color:#ccc9c2cc;">;
+</span><span>
+</span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span>respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">settings</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">contentChangeObserverEnabled</span><span>() </span><span style="color:#f29e74;">||</span><span> respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldDisableContentChangeObserver</span><span>() </span><span style="color:#f29e74;">||</span><span> respondingDocument</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldIgnoreContentObservationForSyntheticClick</span><span>(isFirstSyntheticClickOnPage)) {
+</span><span>    </span><span style="color:#ffd580;">completeSyntheticClick</span><span>(nodeRespondingToClick</span><span style="color:#ccc9c2cc;">,</span><span> location</span><span style="color:#ccc9c2cc;">,</span><span> modifiers</span><span style="color:#ccc9c2cc;">,</span><span> WebCore</span><span style="color:#f29e74;">::</span><span>SyntheticClickType</span><span style="color:#f29e74;">::</span><span>OneFingerTap</span><span style="color:#ccc9c2cc;">,</span><span> pointerId)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>Nothing too interesting here; it's mainly handling quirks to support specific sites that need hardcoded assistance. If we look a bit further down though:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">auto</span><span> nodeTriggersFastPath </span><span style="color:#f29e74;">= </span><span>[</span><span style="color:#f29e74;">&amp;</span><span>](</span><span style="color:#ffa759;">auto</span><span style="color:#f29e74;">&amp;</span><span> targetNode) {
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#f29e74;">!</span><span style="color:#ffd580;">is</span><span>&lt;Element&gt;(targetNode))
+</span><span>        </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">false</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(</span><span style="color:#ffd580;">is</span><span>&lt;HTMLFormControlElement&gt;(targetNode))
+</span><span>        </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">true</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">if </span><span>(targetNode</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">document</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">quirks</span><span>()</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">shouldIgnoreAriaForFastPathContentObservationCheck</span><span>())
+</span><span>        </span><span style="color:#ffa759;">return </span><span style="color:#ffcc66;">false</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">auto</span><span> ariaRole </span><span style="color:#f29e74;">= </span><span>AccessibilityObject</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">ariaRoleToWebCoreRole</span><span>(</span><span style="color:#ffd580;">downcast</span><span>&lt;Element&gt;(targetNode)</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">getAttribute</span><span>(HTMLNames</span><span style="color:#f29e74;">::</span><span>roleAttr))</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return </span><span>AccessibilityObject</span><span style="color:#f29e74;">::</span><span style="color:#ffd580;">isARIAControl</span><span>(ariaRole)</span><span style="color:#ccc9c2cc;">;
+</span><span>}</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">auto</span><span> targetNodeTriggersFastPath </span><span style="color:#f29e74;">= </span><span style="color:#ffd580;">nodeTriggersFastPath</span><span>(nodeRespondingToClick)</span><span style="color:#ccc9c2cc;">;
+</span></code></pre>
+<p>This is handy stuff, and ultimately what I was able to use to get out of the debacle I started with. <code>role=&quot;button&quot;</code> and various other ARIA roles (full list contained in the <code>isARIAControl</code> method) can be used to easily opt out of this content observation behavior, eliminating the delay involved in waiting on the <code>setTimeout</code> callback to finish executing.</p>
+<p>We then see where the code avoids firing the <code>click</code> event, instead awaiting the results of content observation:</p>
+<pre data-lang="cpp" style="background-color:#212733;color:#ccc9c2;" class="language-cpp "><code class="language-cpp" data-lang="cpp"><span style="color:#ffa759;">auto</span><span> observedContentChange </span><span style="color:#f29e74;">=</span><span> contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">observedContentChange</span><span>()</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">auto</span><span> continueContentObservation </span><span style="color:#f29e74;">= !</span><span>(observedContentChange </span><span style="color:#f29e74;">==</span><span> WKContentVisibilityChange </span><span style="color:#f29e74;">||</span><span> targetNodeTriggersFastPath)</span><span style="color:#ccc9c2cc;">;
+</span><span style="color:#ffa759;">if </span><span>(continueContentObservation) {
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// Wait for callback to completePendingSyntheticClickForContentChangeObserver() to decide whether to send the click event.
+</span><span>    </span><span style="color:#ffa759;">const</span><span> Seconds observationDuration </span><span style="color:#f29e74;">= </span><span style="color:#ffcc66;">32</span><span style="color:#ffa759;">_ms</span><span style="color:#ccc9c2cc;">;
+</span><span>    contentChangeObserver</span><span style="color:#f29e74;">.</span><span style="color:#ffd580;">startContentObservationForDuration</span><span>(observationDuration)</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffd580;">LOG</span><span>(ContentObservation</span><span style="color:#ccc9c2cc;">, </span><span style="color:#bae67e;">&quot;handleSyntheticClick: Can&#39;t decide it yet -&gt; wait.&quot;</span><span>)</span><span style="color:#ccc9c2cc;">;
+</span><span>    m_pendingSyntheticClickNode </span><span style="color:#f29e74;">= &amp;</span><span>nodeRespondingToClick</span><span style="color:#ccc9c2cc;">;
+</span><span>    m_pendingSyntheticClickLocation </span><span style="color:#f29e74;">=</span><span> location</span><span style="color:#ccc9c2cc;">;
+</span><span>    m_pendingSyntheticClickModifiers </span><span style="color:#f29e74;">=</span><span> modifiers</span><span style="color:#ccc9c2cc;">;
+</span><span>    m_pendingSyntheticClickPointerId </span><span style="color:#f29e74;">=</span><span> pointerId</span><span style="color:#ccc9c2cc;">;
+</span><span>    </span><span style="color:#ffa759;">return</span><span style="color:#ccc9c2cc;">;
+</span><span>}
+</span></code></pre>
+<p>and that's that. Mystery solved! If <code>setTimeout</code> is delaying your <code>click</code> event from firing on mobile iOS, now we know why.</p>
+<p>I spent hours of my time going down this rabbit hole, and if a blog post like this had existed in a discoverable place it could have saved me a lot of time. Shoutout to my good friend <a href="https://mastodon.social/@nickmcguire">Nick McGuire</a> for rubber ducking with me while I was working on this.</p>
+<p>As a side note, there's a lot of logging in WebKit around content observation and the various events that lead to the <code>setTimeout</code> call blocking the <code>click</code> event from firing. It would be cool to see all of that logging integrated in some way with the web inspector console; if I had been able to see everything all together I could have figured out what was happening much, much faster.</p>
+<p>And before you say it, yes, I know semantically nothing here means <code>setTimeout</code> is blocking the event loop. It's blocking other things. Sue me for clickbait :).</p>
+
+</div>
+
+        </div>
+
+    </body>
+
+</html>

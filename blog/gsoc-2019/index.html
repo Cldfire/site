@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+      <meta http-equiv="X-UA-Compatible" content="IE=edge">
+      <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+      <!-- Enable responsiveness on mobile devices-->
+      <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+      <title>Cldfire&#x27;s Blog</title>
+
+      <!-- CSS -->
+      <link rel="stylesheet" href="https://cldfire.dev/print.css" media="print">
+      <link rel="stylesheet" href="https://cldfire.dev/poole.css">
+      <link rel="stylesheet" href="https://cldfire.dev/hyde.css">
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface">
+
+      
+
+      
+    <link rel=icon type="image/png" href=/favicon.png>
+
+    </head>
+
+    <body class=" layout-reverse">
+        
+            <div class="sidebar">
+                <div class="container sidebar-sticky">
+                    <div class="sidebar-about">
+                        
+                            <a href="https:&#x2F;&#x2F;cldfire.dev"><h1>Cldfire&#x27;s Blog</h1></a>
+                            
+                            <p class="lead">Primarily focused on programming, but other topics may occasionally appear</p>
+                            
+                        
+                    </div>
+
+                    <ul class="sidebar-nav">
+                        
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;twitter.com&#x2F;_cldfire">Twitter</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;hachyderm.io&#x2F;@Cldfire">Mastodon</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;github.com&#x2F;Cldfire">GitHub</a></li>
+                        
+                        <li class="sidebar-nav-item"><a rel="me" href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;cldfire">LinkedIn</a></li>
+                        
+                        <li class="sidebar-nav-item"><a  href="&#x2F;resume.pdf">Resume</a></li>
+                        
+                        
+                    </ul>
+                </div>
+            </div>
+        
+
+        <div class="content container">
+            
+<div class="post">
+  <h1 class="post-title">Google Summer of Code 2019: Hardware-Accelerated Deshake Filter for FFmpeg</h1>
+  <!-- TODO: Make this configurable in the theme? -->
+  <span class="post-date">August 26, 2019</span>
+  <p>Back in March of this year I carved time out of my busy school and work schedule to dive into the FFmpeg codebase and explore working with OpenCL to write hardware-accelerated video filters. It was interesting work (you can read about my experience as well as some information on how to write a filter of your own <a href="https://cldfire.dev/blog/writing-an-opencl-filter-for-ffmpeg/">here</a>). I squeezed a proposal to write a deshake filter using OpenCL in just before the deadline in early April; my proposal was subsequently accepted a month later, leading to a fantastic summer of research, learning, and writing exciting code with very visual results.</p>
+<p>In this post I'll talk about what I did, provide an overview of the current state of the filter, and discuss some future steps that could be taken to make it even better.</p>
+<h2 id="the-code">The code</h2>
+<p>If you came here looking for the code, look no further. It resides in these three commits to the FFmpeg repository:</p>
+<ul>
+<li><a href="https://github.com/FFmpeg/FFmpeg/commit/d3cd33ab1b23fb459e25ae92a0cd7fbfe7c1c169">lavfi: add utilities to reduce OpenCL boilerplate code</a></li>
+<li><a href="https://github.com/FFmpeg/FFmpeg/commit/5b5746b1e0d2cfef307e3f7c8edec5876eca53dc">lavfi: modify avfilter_get_matrix to support separate scale factors</a></li>
+<li><a href="https://github.com/FFmpeg/FFmpeg/commit/b29c7bcbf6bc257f4302b8bed0509bb5489ca068">lavfi: add deshake_opencl filter</a></li>
+</ul>
+<h2 id="what-is-video-stabilization">What is Video Stabilization?</h2>
+<p>When capturing videos handheld, or without appropriate gear, videos can have an excessive amount of shaking (whether that be high-frequency jitter or low-frequency erratic motion) that distracts the viewer from the actual subject of the clip. Video stabilization refers to processes that have been developed to remove such motion and produce a more pleasing result for the videographer.</p>
+<p>There are many different approaches and methods to perform such stabilization. Modern smartphones have both Optical Image Stabilization (OIS), a hardware feature that moves the camera sensor around to compensate for the motion of the user, and Electronic Image Stabilization (EIS), a software feature that utilizes data from sensors (such as the gyroscope) as well as data drawn from analysis of the video itself in order to warp individual frames and remove camera shake. Google has an excellent blog post on the topic that can be found <a href="https://ai.googleblog.com/2017/11/fused-video-stabilization-on-pixel-2.html">here</a>.</p>
+<p>Many other cameras, however, don't have such technology built-in. Thus, it is important to have software available to stabilize videos after-the-fact, as a purely post-process step in the pipeline. There are various different methodologies within this sub-space of video stabilization to consider, including three-dimensional reconstruction of the camera path within a shot. All approaches, however, function the same way at a basic level: analyze the video to determine its motion, figure out which motion should not be present, and then remove said motion.</p>
+<h2 id="my-approach">My Approach</h2>
+<p>The filter that I wrote this summer functions as follows at a high level:</p>
+<p>For each video frame:</p>
+<ul>
+<li>Find corners (good points to track)</li>
+<li>Create &quot;descriptors&quot; for those points</li>
+<li>Match points to their locations in the previous frame using the descriptors</li>
+<li>Determine which matches are correct and represent the motion of the camera</li>
+<li>Use the correct matches to estimate an affine transform between each frame</li>
+<li>Decompose the transform into translation, rotation, and scale</li>
+</ul>
+<p>The filter then buffers the motion data behind and ahead of the current frame being processed so as to be able to use a Gaussian filter on it (a filter that preserves low-frequency data).</p>
+<p>Using the buffered data, the filter:</p>
+<ul>
+<li>Convolves the motion with a Gaussian filter centered at the current frame's motion</li>
+<li>Transforms the frame appropriately to eliminate the difference between where the frame is and where it should be according to the result of the convolution</li>
+</ul>
+<p>Some of these points deserve more detailed explanation.</p>
+<h3 id="finding-corners">Finding Corners</h3>
+<p>In order to figure out the camera's motion we have to be able to determine how far each frame moved from the one prior. We accomplish this by finding certain points in each frame that have characteristics that make it easy to reliably find them over and over again and determine their correspondences with each other.</p>
+<p>It turns out that corners make good candidates for such points, as they have high contrast and are also difficult to confuse amongst themselves. While lines are very difficult to reliably choose the same point on (every point on a line is extremely similar), corners provide no such room for confusion.</p>
+<p>In order to actually find corners in an image, I take <a href="http://mccormickml.com/2013/02/26/image-derivative/">the derivative of the image</a>'s grayscale representation (resulting in the rate-of-change of the luminance of the image at each point, essentially) and figure out which points have a high rate-of-change in both the x and y directions (representing a corner).</p>
+<p>This computation outputs what's called the Harris response (a measure of &quot;cornerness&quot;) at each point, which I then threshold and do some non-maximum suppression (gridding the image and choosing the maximum value for each block in the grid) on to pick only the best corners.</p>
+<h3 id="point-descriptors">Point Descriptors</h3>
+<p>Figuring out how to match points to each other was particularly interesting to me. I had absolutely no clue how best to do it when I first set out to get it working.</p>
+<p>As it would turn out, one excellent (and semi-recent) method for doing this is called a <a href="https://gilscvblog.com/2013/08/26/tutorial-on-binary-descriptors-part-1/">binary descriptor</a>. I chose to use BRIEF (Binary Robust Independent Elementary Features) descriptors, but all of the various flavors function in essentially the same way. A descriptor is a bit vector where the value of each bit is determined by luminance comparisons between two pixels within a window around the point you're building a descriptor for. In order to determine which pixels to compare and ensure that the same pixels are compared every time, you first initialize a sampling pattern (in my case I simply use a random number generator with a fixed seed to choose pixels to compare).</p>
+<p>Figuring out how similar two descriptors are to each other is then as simple as calculating the <a href="https://en.wikipedia.org/wiki/Hamming_distance">Hamming distance</a> between them (accomplished by XORing one descriptor with the other and then counting the number of ones, which represent differing bits, in the result). A threshold on the number of ones allowed determines whether or not two points are considered the same.</p>
+<p>This simple approach produces quite effective results, although it's not perfect (when a video cut occurs mis-matches happen more frequently than I would like). You can read more about it <a href="https://cvlab.epfl.ch/research/page-90554-en-html/research-detect-brief/">here</a>.</p>
+<h3 id="determining-correct-matches">Determining Correct Matches</h3>
+<p>Despite the usage of binary descriptors, some of the found point correspondences are still going to be incorrect. Additionally, some of the points may be on moving objects in the shot; such objects do not represent the camera's motion and need to be discarded.</p>
+<p>This is accomplished through usage of <a href="https://en.wikipedia.org/wiki/Random_sample_consensus">RANSAC</a> (RANdom SAmple Consensus). RANSAC works by randomly choosing a subset of the given data over and over, calculating models from the subsets, and then figuring out how well each model represents the group as a whole. In the case of point matches, I use RANSAC to choose subsets of three point correspondences, calculate affine transformations between them, and then determine how much error each transform creates if applied to all of the other points. This error is used both to filter out outliers (bad matches, moving objects) and also minimized as a whole to obtain the most accurate model possible.</p>
+<h3 id="decomposing-the-transform">Decomposing the Transform</h3>
+<p>In order to get simpler transformation data to work with I decompose the affine transformation into its individual parts (translation, rotation, scaling) using the QR method as described <a href="http://frederic-wang.fr/decomposition-of-2d-transform-matrices.html">here</a>.</p>
+<p>This information then gets buffered and convolved with a Gaussian filter to smooth the camera's motion.</p>
+<h2 id="current-state-of-the-filter">Current State of the Filter</h2>
+<p>Here are some before / after comparisons showing the results that my filter produces on a couple of videos:</p>
+<div >
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/1Z82g65YF_4"
+    webkitallowfullscreen
+    mozallowfullscreen
+    allowfullscreen
+  ></iframe>
+</div>
+<p>The smooth strength was set to a fixed value of 0.75 for this one:</p>
+<div >
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/RorW2M8sNZU"
+    webkitallowfullscreen
+    mozallowfullscreen
+    allowfullscreen
+  ></iframe>
+</div>
+<p>The command used to create them:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>./ffmpeg -i input.mp4 -init_hw_device opencl=gpu -filter_hw_device gpu -filter_complex &quot;split[a][b]; [a]pad=iw*2:ih[src]; [b]format=yuv420p, hwupload, deshake_opencl, hwdownload, format=yuv420p[filt]; [src][filt]overlay=w&quot; output.mp4
+</span></code></pre>
+<p>Here are the results that the CPU deshake filter produces for contrast:</p>
+<div >
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/TfMZdEUZ4TA"
+    webkitallowfullscreen
+    mozallowfullscreen
+    allowfullscreen
+  ></iframe>
+</div>
+<div >
+  <iframe
+    src="https://www.youtube-nocookie.com/embed/4Rh0e52j4qU"
+    webkitallowfullscreen
+    mozallowfullscreen
+    allowfullscreen
+  ></iframe>
+</div>
+<p>The filter is reasonably performant (faster than the CPU deshake filter, rough numbers below) and, as observed above, generally produces better results. It provides a number of configurable settings, including the strength of the smoothing applied, and also supports debug output to view the point matches as well as statistics about transformations and kernel execution times.</p>
+<h3 id="performance-numbers">Performance Numbers</h3>
+<p>The bridge video used in the first example was used to capture performance numbers.</p>
+<p>Commands used:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>time ./ffmpeg -i input.mp4 -init_hw_device opencl=gpu -filter_hw_device gpu -filter_complex &quot;[0:v]format=yuv420p, hwupload, deshake_opencl, hwdownload, format=yuv420p&quot; output.mp4
+</span></code></pre>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>time ./ffmpeg -i input.mp4 -vf deshake output.mp4
+</span></code></pre>
+<p>On my dev machine with a 980 Ti and a 6700k on Arch Linux:</p>
+<p>deshake_opencl filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m14.717s
+</span><span>user    1m37.036s
+</span><span>sys     0m1.707s
+</span></code></pre>
+<p>deshake filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m35.266s
+</span><span>user    1m51.744s
+</span><span>sys     0m0.307s
+</span></code></pre>
+<p>On a 2019 13-inch base model Macbook Pro with Iris Plus Graphics 645:</p>
+<p>deshake_opencl filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m29.969s
+</span><span>user    2m42.721s
+</span><span>sys     0m3.233s
+</span></code></pre>
+<p>deshake filter:</p>
+<pre style="background-color:#212733;color:#ccc9c2;"><code><span>real    0m42.789s
+</span><span>user    2m13.579s
+</span><span>sys     0m1.213s
+</span></code></pre>
+<h2 id="future-work">Future Work</h2>
+<p>The two largest improvements that could be made, in my opinion, are:</p>
+<ul>
+<li>Implement a non-linear least squares solver (the <a href="https://en.wikipedia.org/wiki/Levenberg%E2%80%93Marquardt_algorithm">Levenberg-Marquardt algorithm</a> would be one option) in order to more accurately determine a transform from the output of RANSAC (points that are considered inliers). This would reduce the jitter in the output and produce even smoother videos. I had not studied linear algebra yet and therefore was not at a level mathematically this summer where I was able to take this on.</li>
+<li>Improve the performance of the harris_response kernel. While the performance of the filter is already very good (especially on my NVIDIA GPU), it could be even better with some more optimization. The harris_response kernel in particular takes much longer than I believe it should on weaker hardware, likely due to poor memory access patterns (although confirming this is difficult due to the lack of supported profiling tools for OpenCL).</li>
+</ul>
+<p>From there, there are millions of tiny improvements that could be made and an endless supply of potential techniques that could be implemented to improve results for specific subsets of videos. Video stabilization is a very open research topic and will likely stay that way for quite some time.</p>
+<h2 id="final-thoughts">Final Thoughts</h2>
+<p>The Google Summer of Code program has proved to be a fantastic experience and gave me the opportunity to learn and grow in ways that I never would have been able to otherwise over the last few months. Thanks to the generous pay, I was able to work much less at my part-time job in the service industry and focus on programming instead, one of the main goals of the program. Even better, I got to work on an exciting project with very visual results!</p>
+<p>I want to extend my graditude to the FFmpeg project, and in particular my mentor, Mark Thompson, for accepting my project proposal and guiding me throughout the summer as I worked my way toward the finish line.</p>
+<p>If you are reading this as a student considering applying for a future year of GSoC, I would highly recommend that you do; the ability to work remotely with flexible hours as a student over the summer is priceless, and contributing to open-source software is a great way to ensure that many people are able to benefit from your work.</p>
+<p>So long, GSoC 2019!</p>
+
+</div>
+
+        </div>
+
+    </body>
+
+</html>
